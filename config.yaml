@@ -1,0 +1,26 @@
+# env
+env_name: "Ant-v4"
+render_mode: "rgb_array"
+# run
+num_workers: 5
+num_iterations: 20
+timesteps_per_iteration: 1000
+ema_window: 4  # 平滑化するIteration
+dropout_rates:
+  pi: [0.05, 0.1]  # Actorネットワーク各層のドロップアウト率
+  vf: [0.0, 0.0]   # Criticネットワーク各層のドロップアウト率
+slope_threshold: 0.1  # ネットワーク修正の閾値
+# model
+algorithm: "PPO"
+policy_kwargs:
+  activation_fn: "ReLU"
+  net_arch: {
+    pi: [64, 64],
+    vf: [64, 64]
+  }
+# device
+device: "cpu"  # or "cuda"
+# logdir
+logdir: "logs"  # Directory to save checkpoints and models
+# checkpoint_interval
+checkpoint_interval: 5  # Save a checkpoint every 5 iterations

@@ -1,25 +1,38 @@
+import yaml
+import json
 import gymnasium as gym
 import numpy as np
 from multiprocessing import Process, Queue
-from stable_baselines3 import PPO
+import stable_baselines3
 import torch
 import torch.nn as nn
 import matplotlib.pyplot as plt
 import os
-from .config import Config
+import matplotlib.ticker as ticker
 
-os.environ["MUJOCO_GL"] = "egl"
 
-def follower_process(env_name, queue, weight_queue, worker_id, num_iterations, device):
+def load_config(file_path):
+    with open(file_path, 'r', encoding='utf-8') as file:
+        return yaml.safe_load(file)
+
+def follower_process(env_name, queue, weight_queue, worker_id, cfg):
     """
     各workerプロセスでPPOを学習し、評価結果をleaderに送信。
     """
-    env = gym.make(env_name, render_mode='rgb_array')
-    policy_kwargs = dict(activation_fn=torch.nn.ReLU, net_arch=dict(pi=[64, 64], vf=[64, 64]))
-    model = PPO("MlpPolicy", env, verbose=0, policy_kwargs=policy_kwargs, device=device)
+    env = gym.make(env_name, render_mode=cfg['render_mode'])
+    policy_kwargs = cfg['policy_kwargs']
+    activation_fn = getattr(torch.nn, policy_kwargs['activation_fn'])
+    policy_kwargs = dict(
+        activation_fn=activation_fn,
+        net_arch=policy_kwargs['net_arch']
+    )
+    algorithm = getattr(stable_baselines3, cfg['algorithm'])
+    device = cfg['device']
+    # Create fully-connected network
+    model = algorithm("MlpPolicy", env, verbose=0, policy_kwargs=policy_kwargs, device=device)
 
-    for iteration in range(num_iterations):
-        model.learn(total_timesteps=1000)
+    for iteration in range(cfg['num_iterations']):
+        model.learn(total_timesteps=cfg['timesteps_per_iteration'])
 
         # 評価
         total_reward = evaluate_policy(env, model)
@@ -32,12 +45,23 @@ def follower_process(env_name, queue, weight_queue, worker_id, num_iterations, d
         model.policy.load_state_dict(new_weights)
         policy_kwargs["net_arch"] = new_arch
 
+    # Save the final model
+    final_model_path = os.path.join(cfg['logdir'], f"worker_{worker_id}_final_model.zip")
+    model.save(final_model_path)
+
     env.close()
 
-def leader_process(queue, weight_queue, num_workers, num_iterations, ema_window, dropout_rates, slope_threshold, device):
+def leader_process(queue, weight_queue, cfg):
     """
     leaderが評価結果を収集し、収益を平滑化、傾きを計算、必要ならネットワークを再構築。
     """
+    num_workers = cfg['num_workers']
+    num_iterations = cfg['num_iterations']
+    ema_window = cfg['ema_window']
+    dropout_rates = cfg['dropout_rates']
+    slope_threshold = cfg['slope_threshold']
+    device = cfg['device']
+
     all_rewards = []
     ema_rewards = []
     rewards_per_worker = [[] for _ in range(num_workers)]  # 各workerの収益記録
@@ -45,22 +69,37 @@ def leader_process(queue, weight_queue, num_workers, num_iterations, ema_window,
     iteration_list = []
 
     for iteration in range(num_iterations):
-        results = []
+        rewards = []
         weights = []
         policy_arch = None
         iteration_list.append(iteration)
+        results = []
 
         # 各workerから結果を収集
         for _ in range(num_workers):
             worker_id, iter_id, reward, policy_kwargs, policy_weight = queue.get()
-            results.append(reward)
-            weights.append(policy_weight)
+            rewards.append(reward)
             rewards_per_worker[worker_id].append(reward)
+            weights.append(policy_weight)
             policy_arch = policy_kwargs["net_arch"]
+            results.append((worker_id, reward, policy_kwargs, policy_weight))
+
+        # sort results in reward decending order
+        results.sort(key=lambda x: x[1], reverse=True)
+        best_worker = results[0][0]
+        best_policy_kwargs = results[best_worker][2]
+        best_policy_weight = results[best_worker][3]
+        best_actor = best_policy_kwargs['net_arch']['pi']
+        best_critic = best_policy_kwargs['net_arch']['vf']
+         # Save model checkpoint based on the configured interval
+        if iteration > 0 and iteration % cfg['checkpoint_interval'] == 0:
+            checkpoint_path = os.path.join(cfg['logdir'], f"iter{iteration}_pi{best_actor}_vf{best_critic}.json")
+            with open(checkpoint_path, 'w') as f:
+                json.dump(best_policy_weight, f, indent=4)
 
         # 統計情報を表示
-        mean_reward = np.mean(results)
-        std_reward = np.std(results)
+        mean_reward = np.mean(rewards)
+        std_reward = np.std(rewards)
         all_rewards.append(mean_reward)
 
         # EMAを更新
@@ -78,7 +117,7 @@ def leader_process(queue, weight_queue, num_workers, num_iterations, ema_window,
             slope = float("nan")
 
         # 出力: 統計情報
-        print(f"Iteration {iteration}: Reward Mean = {mean_reward:.2f}, Std = {std_reward:.2f}, Slope = {slope:.4f}")
+        print(f"\nIteration {iteration}: Reward Mean = {mean_reward:.2f}, Std = {std_reward:.2f}, Slope = {slope:.4f}")
 
         # 出力: アーキテクチャ情報
         print("Current Policy Architecture:")
@@ -87,7 +126,7 @@ def leader_process(queue, weight_queue, num_workers, num_iterations, ema_window,
 
         # ネットワークの修正条件
         if slope < slope_threshold and len(weights) > 0:
-            print(f"Iteration {iteration}: Modifying network architecture")
+            print(f"-----------Iteration {iteration}: Modifying network architecture----------")
             avg_weights = average_weights(weights)
             modified_arch, modified_weights = modify_network(avg_weights, policy_arch, dropout_rates, device)
             iteration_list = []
@@ -104,34 +143,126 @@ def leader_process(queue, weight_queue, num_workers, num_iterations, ema_window,
         for _ in range(num_workers):
             weight_queue.put((modified_weights, modified_arch))
 
-    # 収益のグラフを表示
-    logger.log()
+    # Plot the learning curve with dual y-axes
+    fig, ax1 = plt.subplots(figsize=(10, 5))
+
+    # Plot all_rewards on the first y-axis
+    ax1.set_xlabel('Iteration')
+    ax1.set_ylabel('Mean Reward', color='tab:blue')
+    ax1.plot(all_rewards, label='Mean Reward', color='tab:blue')
+    ax1.tick_params(axis='y', labelcolor='tab:blue')
+
+    # Fill between for mean reward range
+    iterations = range(len(all_rewards))
+    rewards_min = np.min(rewards_per_worker, axis=0)
+    rewards_max = np.max(rewards_per_worker, axis=0)
+    ax1.fill_between(
+        iterations,
+        rewards_min,
+        rewards_max,
+        color="blue",
+        alpha=0.2,
+        label="Reward Range",
+    )
+
+    # Ensure x-axis ticks are integers
+    ax1.xaxis.set_major_locator(ticker.MaxNLocator(integer=True))
+
+    # Create a second y-axis to plot total_neurons
+    ax2 = ax1.twinx()
+    ax2.set_ylabel('Total Neurons', color='tab:orange')
+    ax2.plot(neuron_counts, label='Total Neurons', color='tab:orange', linestyle='--')
+    ax2.tick_params(axis='y', labelcolor='tab:orange')
+
+    # Ensure y-axis ticks for total neurons are integers
+    ax2.yaxis.set_major_locator(ticker.MaxNLocator(integer=True))
+
+    # Add a title and grid
+    plt.title('Learning Curve and Neuron Count')
+    fig.tight_layout()
+    plt.grid(True)
+
+    # Add legends
+    ax1.legend(loc='upper left')
+    ax2.legend(loc='upper right')
+
+    # Show the plot
+    plt.show()
+
+
+def evaluate_policy(env, model, num_eval_episodes=5, num_eval_steps_per_episode=1000):
+    total_rewards = []
+    for _ in range(num_eval_episodes):
+        observation, info = env.reset()
+        episode_reward = 0
+        for _ in range(num_eval_steps_per_episode):
+            action, _ = model.predict(observation, deterministic=True)
+            observation, reward, terminated, truncated, info = env.step(action)
+            episode_reward += reward
+            if terminated or truncated:
+                break
+        total_rewards.append(episode_reward)
+    return np.mean(total_rewards)
+
+def modify_network(weights, arch, dropout_rates, device):
+    """
+    ネットワークのアーキテクチャを修正し、指定割合のニューロンを削除。
+    """
+    new_arch = {}
+    modified_weights = {}
+
+    for layer_type, layers in arch.items():  # layer_type は 'pi' または 'vf'
+        new_arch[layer_type] = []
+        for idx, units in enumerate(layers):
+            # 各層のドロップアウト率を取得
+            dropout_rate = dropout_rates[layer_type][idx]
+            new_units = int(units * (1 - dropout_rate))  # 削除後のユニット数
+            new_arch[layer_type].append(new_units)
+
+        # 重みを修正
+        for key, value in weights.items():
+            if layer_type in key and "weight" in key:
+                # 各層の削除されたニューロンに対応する重みを除外
+                layer_idx = int(key.split(".")[1])  # 層のインデックスを取得
+                if layer_idx < len(layers):
+                    new_units = new_arch[layer_type][layer_idx]
+                    modified_weights[key] = value[:new_units, :new_units].to(device)
+                else:
+                    modified_weights[key] = value.to(device)
+            else:
+                modified_weights[key] = value.to(device)
+
+    return new_arch, modified_weights
+
+
+def average_weights(weights_list):
+    """
+    重みを平均化する。
+    """
+    avg_weights = {}
+    for key in weights_list[0].keys():
+        avg_weights[key] = torch.stack([weights[key] for weights in weights_list]).mean(dim=0)
+    return avg_weights
 
 
 if __name__ == "__main__":
-    ENV_NAME = "Ant-v4"
-    NUM_WORKERS = 5
-    NUM_ITERATIONS = 20
-    EMA_WINDOW = 4  # 平滑化するIteration
-    DROPOUT_RATES = {
-    "pi": [0.05, 0.1],  # Actorネットワーク各層のドロップアウト率
-    "vf": [0.0, 0.0]   # Criticネットワーク各層のドロップアウト率
-    }
-    SLOPE_THRESHOLD = 0.1  # ネットワーク修正の閾値
-    DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+    import pprint
+    cfg = load_config('config.yaml')
+    # Pretty-print the configuration
+    pprint.pprint(cfg)
 
     result_queue = Queue()
     weight_queue = Queue()
 
     # Workerプロセスの作成
     workers = []
-    for worker_id in range(NUM_WORKERS):
-        p = Process(target=follower_process, args=(ENV_NAME, result_queue, weight_queue, worker_id, NUM_ITERATIONS, DEVICE))
+    for worker_id in range(cfg['num_workers']):
+        p = Process(target=follower_process, args=(cfg['env_name'], result_queue, weight_queue, worker_id, cfg))
         workers.append(p)
         p.start()
 
     # Leaderプロセスの実行
-    leader_process(result_queue, weight_queue, NUM_WORKERS, NUM_ITERATIONS, EMA_WINDOW, DROPOUT_RATES, SLOPE_THRESHOLD, DEVICE)
+    leader_process(result_queue, weight_queue, cfg)
 
     # Workerプロセスの終了を待つ
     for p in workers:
