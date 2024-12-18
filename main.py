@@ -9,33 +9,25 @@ import torch.nn as nn
 import matplotlib.pyplot as plt
 import os
 import matplotlib.ticker as ticker
+from permanent_dropout import Model
 
 
 def load_config(file_path):
     with open(file_path, 'r', encoding='utf-8') as file:
         return yaml.safe_load(file)
 
-def follower_process(env_name, queue, weight_queue, worker_id, cfg):
+def follower_process(queue, weight_queue, worker_id, cfg):
     """
     各workerプロセスでPPOを学習し、評価結果をleaderに送信。
     """
-    env = gym.make(env_name, render_mode=cfg['render_mode'])
-    policy_kwargs = cfg['policy_kwargs']
-    activation_fn = getattr(torch.nn, policy_kwargs['activation_fn'])
-    policy_kwargs = dict(
-        activation_fn=activation_fn,
-        net_arch=policy_kwargs['net_arch']
-    )
-    algorithm = getattr(stable_baselines3, cfg['algorithm'])
-    device = cfg['device']
-    # Create fully-connected network
-    model = algorithm("MlpPolicy", env, verbose=0, policy_kwargs=policy_kwargs, device=device)
+    # Create variable architecture model
+    model = Model(cfg)
 
     for iteration in range(cfg['num_iterations']):
         model.learn(total_timesteps=cfg['timesteps_per_iteration'])
 
         # 評価
-        total_reward = evaluate_policy(env, model)
+        total_reward = model.evaluate_policy()
 
         # 現在のポリシー重みとアーキテクチャを送信
         queue.put((worker_id, iteration, total_reward, policy_kwargs, model.policy.state_dict()))
@@ -190,20 +182,6 @@ def leader_process(queue, weight_queue, cfg):
     plt.show()
 
 
-def evaluate_policy(env, model, num_eval_episodes=5, num_eval_steps_per_episode=1000):
-    total_rewards = []
-    for _ in range(num_eval_episodes):
-        observation, info = env.reset()
-        episode_reward = 0
-        for _ in range(num_eval_steps_per_episode):
-            action, _ = model.predict(observation, deterministic=True)
-            observation, reward, terminated, truncated, info = env.step(action)
-            episode_reward += reward
-            if terminated or truncated:
-                break
-        total_rewards.append(episode_reward)
-    return np.mean(total_rewards)
-
 def modify_network(weights, arch, dropout_rates, device):
     """
     ネットワークのアーキテクチャを修正し、指定割合のニューロンを削除。
@@ -257,7 +235,7 @@ if __name__ == "__main__":
     # Workerプロセスの作成
     workers = []
     for worker_id in range(cfg['num_workers']):
-        p = Process(target=follower_process, args=(cfg['env_name'], result_queue, weight_queue, worker_id, cfg))
+        p = Process(target=follower_process, args=(result_queue, weight_queue, worker_id, cfg))
         workers.append(p)
         p.start()
 
