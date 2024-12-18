@@ -9,7 +9,7 @@ import torch.nn as nn
 import matplotlib.pyplot as plt
 import os
 import matplotlib.ticker as ticker
-from permanent_dropout import Model
+from permanent_dropout.model import Model
 
 
 def load_config(file_path):
@@ -22,26 +22,28 @@ def follower_process(queue, weight_queue, worker_id, cfg):
     """
     # Create variable architecture model
     model = Model(cfg)
+    env = model.env
 
     for iteration in range(cfg['num_iterations']):
+        # Update policy weights
         model.learn(total_timesteps=cfg['timesteps_per_iteration'])
 
-        # 評価
+        # policy evaluation
         total_reward = model.evaluate_policy()
 
-        # 現在のポリシー重みとアーキテクチャを送信
-        queue.put((worker_id, iteration, total_reward, policy_kwargs, model.policy.state_dict()))
+        # send current policy weights and architecture to the leader
+        queue.put((worker_id, iteration, total_reward, model.policy_kwargs, model.policy.state_dict()))
 
-        # Leaderから新しい重みとアーキテクチャを受信
-        new_weights, new_arch = weight_queue.get()
-        model.policy.load_state_dict(new_weights)
-        policy_kwargs["net_arch"] = new_arch
+        # receive new policy weights and architecture from the leader
+        new_arch, new_weights = weight_queue.get()
+        new_kwargs = model.policy_kwargs.copy()
+        new_kwargs['net_arch'] = new_arch
+        new_model = model.make_policy(env, new_kwargs, new_weights)
+        model.model = new_model
 
     # Save the final model
-    final_model_path = os.path.join(cfg['logdir'], f"worker_{worker_id}_final_model.zip")
-    model.save(final_model_path)
-
-    env.close()
+    final_model_path = os.path.join(cfg['logdir'], 'terminal')
+    model.save_policy(save_to=final_model_path)
 
 def leader_process(queue, weight_queue, cfg):
     """
@@ -78,16 +80,16 @@ def leader_process(queue, weight_queue, cfg):
 
         # sort results in reward decending order
         results.sort(key=lambda x: x[1], reverse=True)
-        best_worker = results[0][0]
-        best_policy_kwargs = results[best_worker][2]
-        best_policy_weight = results[best_worker][3]
-        best_actor = best_policy_kwargs['net_arch']['pi']
-        best_critic = best_policy_kwargs['net_arch']['vf']
-         # Save model checkpoint based on the configured interval
+
+        # find the best worker and save at every checkpoint
         if iteration > 0 and iteration % cfg['checkpoint_interval'] == 0:
-            checkpoint_path = os.path.join(cfg['logdir'], f"iter{iteration}_pi{best_actor}_vf{best_critic}.json")
-            with open(checkpoint_path, 'w') as f:
-                json.dump(best_policy_weight, f, indent=4)
+            best_worker = results[0][0]
+            best_policy_kwargs = results[best_worker][2]
+            best_policy_weight = results[best_worker][3]
+            best_actor = best_policy_kwargs['net_arch']['pi']
+            best_critic = best_policy_kwargs['net_arch']['vf']
+            print(best_worker)
+            
 
         # 統計情報を表示
         mean_reward = np.mean(rewards)
@@ -133,7 +135,7 @@ def leader_process(queue, weight_queue, cfg):
 
         # 重みと新しいアーキテクチャを各workerに送信
         for _ in range(num_workers):
-            weight_queue.put((modified_weights, modified_arch))
+            weight_queue.put((modified_arch, modified_weights))
 
     # Plot the learning curve with dual y-axes
     fig, ax1 = plt.subplots(figsize=(10, 5))

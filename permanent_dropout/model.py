@@ -7,39 +7,72 @@ import cloudpickle
 class Model:
     def __init__(self, cfg):
         self.cfg = cfg
-        env = gym.make(cfg['env_name'], render_mode=cfg['render_mode'])
-        policy_kwargs = cfg['policy_kwargs']
-        activation_fn = getattr(torch.nn, policy_kwargs['activation_fn'])
+        self.env = gym.make(cfg['env_name'], render_mode=cfg['render_mode'])
+        self.model = self.make_policy(self.env)
+    
+    @property
+    def policy_kwargs(self):
+        return self.model.policy_kwargs
+    
+    @property
+    def policy(self):
+        return self.model.policy
+    
+    def make_policy(self, env, policy_kwargs=None, policy_weights=None):
+        if policy_kwargs is None:
+            policy_kwargs = self.cfg['policy_kwargs']
+
+        if isinstance(policy_kwargs['activation_fn'], str):
+            activation_fn = getattr(torch.nn, policy_kwargs['activation_fn'])
+        else:
+            activation_fn = policy_kwargs['activation_fn']
+
         policy_kwargs = dict(
             activation_fn=activation_fn,
             net_arch=policy_kwargs['net_arch']
         )
-        algorithm = getattr(stable_baselines3, cfg['algorithm'])
-        device = cfg['device']
+        algorithm = getattr(stable_baselines3, self.cfg['algorithm'])
+        device = self.cfg['device']
 
         self.model = algorithm("MlpPolicy", env, verbose=0, policy_kwargs=policy_kwargs, device=device)
+        if policy_weights is not None:
+            self.model.policy.load_state_dict(policy_weights)
         return self.model
-    
-    def save_policy(self):
-        pass
 
-    def load_policy(self):
-        pass
+    def save_policy(self, save_to=''):
+        policy_kwargs = self.model.policy_kwargs
+        policy_weights = self.model.policy_state_dict()
+        with open(f'{save_to}/policy_kwargs.pkl', 'wb') as f:
+            cloudpickle.dump(policy_kwargs, f)
+        with open(f'{save_to}/policy_weights.pkl', 'wb') as f:
+            cloudpickle.dump(policy_weights, f)
+
+    def load_policy(self, load_from=''):
+        with open(f'{load_from}/policy_kwargs.pkl', 'rb') as f:
+            deserialized_kwargs = cloudpickle.load(f)
+        with open(f'{load_from}/policy_weights.pkl', 'rb') as f:
+            deserialized_weights = cloudpickle.load(f)
+
+        cfg = self.cfg.copy()
+        cfg['policy_kwargs'] = deserialized_kwargs
+        cfg['policy_weights'] = deserialized_weights
+        self.model = self.make_policy(self.env, cfg)
+        return self.model
 
     def learn(self, total_timesteps):
-        pass
+        self.model.learn(total_timesteps)
 
     def evaluate_policy(self, num_eval_episodes=5, num_eval_steps_per_episode=1000):
-        env = self.cfg['env_name']
         total_rewards = []
         for _ in range(num_eval_episodes):
-            observation, info = env.reset()
+            observation, info = self.env.reset()
             episode_reward = 0
             for _ in range(num_eval_steps_per_episode):
                 action, _ = self.model.predict(observation, deterministic=True)
-                observation, reward, terminated, truncated, info = env.step(action)
+                observation, reward, terminated, truncated, info = self.env.step(action)
                 episode_reward += reward
                 if terminated or truncated:
                     break
             total_rewards.append(episode_reward)
+        self.env.close()
         return np.mean(total_rewards)
