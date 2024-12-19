@@ -10,6 +10,7 @@ import matplotlib.pyplot as plt
 import os
 import matplotlib.ticker as ticker
 from permanent_dropout.model import Model
+from permanent_dropout.trainer import Trainer
 
 
 def load_config(file_path):
@@ -55,6 +56,7 @@ def leader_process(queue, weight_queue, cfg):
     dropout_rates = cfg['dropout_rates']
     slope_threshold = cfg['slope_threshold']
     device = cfg['device']
+    trainer = Trainer(cfg)
 
     all_rewards = []
     ema_rewards = []
@@ -121,13 +123,13 @@ def leader_process(queue, weight_queue, cfg):
         # ネットワークの修正条件
         if slope < slope_threshold and len(weights) > 0:
             print(f"-----------Iteration {iteration}: Modifying network architecture----------")
-            avg_weights = average_weights(weights)
-            modified_arch, modified_weights = modify_network(avg_weights, policy_arch, dropout_rates, device)
+            avg_weights = trainer.average_weights(weights)
+            modified_arch, modified_weights = trainer.modify_network(avg_weights, policy_arch, dropout_rates, device)
             iteration_list = []
             ema_rewards = []
         else:
             modified_arch = policy_arch
-            modified_weights = average_weights(weights)
+            modified_weights = trainer.average_weights(weights)
 
         # ニューロン数を記録
         total_neurons = sum(sum(units) for units in modified_arch.values())
@@ -182,47 +184,6 @@ def leader_process(queue, weight_queue, cfg):
 
     # Show the plot
     plt.show()
-
-
-def modify_network(weights, arch, dropout_rates, device):
-    """
-    ネットワークのアーキテクチャを修正し、指定割合のニューロンを削除。
-    """
-    new_arch = {}
-    modified_weights = {}
-
-    for layer_type, layers in arch.items():  # layer_type は 'pi' または 'vf'
-        new_arch[layer_type] = []
-        for idx, units in enumerate(layers):
-            # 各層のドロップアウト率を取得
-            dropout_rate = dropout_rates[layer_type][idx]
-            new_units = int(units * (1 - dropout_rate))  # 削除後のユニット数
-            new_arch[layer_type].append(new_units)
-
-        # 重みを修正
-        for key, value in weights.items():
-            if layer_type in key and "weight" in key:
-                # 各層の削除されたニューロンに対応する重みを除外
-                layer_idx = int(key.split(".")[1])  # 層のインデックスを取得
-                if layer_idx < len(layers):
-                    new_units = new_arch[layer_type][layer_idx]
-                    modified_weights[key] = value[:new_units, :new_units].to(device)
-                else:
-                    modified_weights[key] = value.to(device)
-            else:
-                modified_weights[key] = value.to(device)
-
-    return new_arch, modified_weights
-
-
-def average_weights(weights_list):
-    """
-    重みを平均化する。
-    """
-    avg_weights = {}
-    for key in weights_list[0].keys():
-        avg_weights[key] = torch.stack([weights[key] for weights in weights_list]).mean(dim=0)
-    return avg_weights
 
 
 if __name__ == "__main__":
