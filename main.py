@@ -24,6 +24,8 @@ def follower_process(queue, weight_queue, worker_id, cfg):
     # Create variable architecture model
     model = Model(cfg)
     env = model.env
+    # cfg.update({'observation_dim': env.observation_space.shape[0]})
+    # cfg.update({'action_dim': env.action_space.shape[0]})
 
     for iteration in range(cfg['num_iterations']):
         # Update policy weights
@@ -37,10 +39,17 @@ def follower_process(queue, weight_queue, worker_id, cfg):
 
         # receive new policy weights and architecture from the leader
         new_arch, new_weights = weight_queue.get()
-        new_kwargs = model.policy_kwargs.copy()
-        new_kwargs['net_arch'] = new_arch
-        new_model = model.make_policy(env, new_kwargs, new_weights)
-        model.model = new_model
+
+        if model.policy_kwargs['net_arch'] != new_arch: # net arch has been changed
+            new_kwargs = model.policy_kwargs.copy()
+            new_kwargs['net_arch'] = new_arch
+            print(new_kwargs)
+            for key, val in new_weights.items():
+                print(key, val.shape)
+            model.make_policy(env, new_kwargs, new_weights)
+        else:
+            model.make_policy(env, None, new_weights)
+        # model.model = new_model
 
     # Save the final model
     final_model_path = os.path.join(cfg['logdir'], 'terminal')
@@ -124,7 +133,10 @@ def leader_process(queue, weight_queue, cfg):
         if slope < slope_threshold and len(weights) > 0:
             print(f"-----------Iteration {iteration}: Modifying network architecture----------")
             avg_weights = trainer.average_weights(weights)
-            modified_arch, modified_weights = trainer.modify_network(avg_weights, policy_arch, dropout_rates, device)
+            arch, params, aux = trainer.preprocess(raw_arch=policy_arch, raw_params=avg_weights)
+            modified_arch, modified_params = trainer.modify_network(params, arch, dropout_rates)
+            modified_arch, modified_params = trainer.reconstruct(modified_arch, modified_params, aux)
+
             iteration_list = []
             ema_rewards = []
         else:
@@ -191,7 +203,8 @@ if __name__ == "__main__":
     cfg = load_config('config.yaml')
     # Pretty-print the configuration
     pprint.pprint(cfg)
-
+    assert len(cfg['dropout_rates']['policy']) == len(cfg['policy_kwargs']['net_arch']['pi'])
+    assert len(cfg['dropout_rates']['value']) == len(cfg['policy_kwargs']['net_arch']['vf'])
     result_queue = Queue()
     weight_queue = Queue()
 

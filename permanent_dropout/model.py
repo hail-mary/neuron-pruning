@@ -8,7 +8,7 @@ class Model:
     def __init__(self, cfg):
         self.cfg = cfg
         self.env = gym.make(cfg['env_name'], render_mode=cfg['render_mode'])
-        self.model = self.make_policy(self.env)
+        self.make_policy(self.env)
     
     @property
     def policy_kwargs(self):
@@ -37,11 +37,10 @@ class Model:
         self.model = algorithm("MlpPolicy", env, verbose=0, policy_kwargs=policy_kwargs, device=device)
         if policy_weights is not None:
             self.model.policy.load_state_dict(policy_weights)
-        return self.model
 
     def save_policy(self, save_to=''):
         policy_kwargs = self.model.policy_kwargs
-        policy_weights = self.model.policy_state_dict()
+        policy_weights = self.model.policy.state_dict()
         with open(f'{save_to}/policy_kwargs.pkl', 'wb') as f:
             cloudpickle.dump(policy_kwargs, f)
         with open(f'{save_to}/policy_weights.pkl', 'wb') as f:

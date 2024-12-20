@@ -4,12 +4,12 @@ render_mode: "rgb_array"
 # run
 num_workers: 5
 num_iterations: 20
-timesteps_per_iteration: 1000
+timesteps_per_iteration: 1
 ema_window: 4  # 平滑化するIteration
 dropout_rates:
-  pi: [0.05, 0.1]  # Actorネットワーク各層のドロップアウト率
-  vf: [0.0, 0.0]   # Criticネットワーク各層のドロップアウト率
-slope_threshold: 0.1  # ネットワーク修正の閾値
+  policy: [0.05, 0.1]  # Actorネットワーク各層のドロップアウト率
+  value: [0.0, 0.0]   # Criticネットワーク各層のドロップアウト率
+slope_threshold: 0.5  # ネットワーク修正の閾値
 # model
 algorithm: "PPO"
 policy_kwargs:

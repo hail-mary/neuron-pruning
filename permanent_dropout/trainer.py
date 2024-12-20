@@ -1,10 +1,5 @@
 import torch
-
-
-layer_types = ('policy', 'value')
-archs = tuple(model.policy_kwargs['net_arch'].values())
-weights = model.policy.state_dict()
-arch = dict(zip(layer_types, archs))
+import numpy as np
 
 class Trainer:
     """
@@ -15,28 +10,48 @@ class Trainer:
 
     
     def average_weights(self, weights_list):
-        """
-        重みを平均化する。
-        """
         avg_weights = {}
         for key in weights_list[0].keys():
             avg_weights[key] = torch.stack([weights[key] for weights in weights_list]).mean(dim=0)
         return avg_weights
 
-    def reshape_params(self, weights):
+    def preprocess(self, raw_arch, raw_params):
+        # First, preprocess arch
+        layer_types = ('policy', 'value')
+        archs = tuple(raw_arch.values())
+        arch = dict(zip(layer_types, archs))
+
+        # Then, preprocess params
         params = {}
         for layer_type, layers in arch.items():
-            for key, val in weights.items():
+            for key, val in raw_params.items():
                 if layer_type in key and 'weight' in key:
                     params.update({key: val})
                 elif layer_type in key and 'bias' in key:
                     params.update({key: val})
                 elif 'action' in key and layer_type == 'policy':
                     params.update({key: val})
-        params.pop('action_net.bias')
-        params.pop('value_net.bias')
 
-        return params
+        # keep auxilary info to reconstruct
+        aux = {'log_std': raw_params.pop('log_std'), 
+               'action_net.bias': raw_params.pop('action_net.bias'),
+               'value_net.bias': raw_params.pop('value_net.bias'),
+        }
+
+        return arch, params, aux
+
+    def reconstruct(self, arch, params, aux):
+        # First, reconstruct arch
+        layer_types = ('pi', 'vf')
+        archs = tuple(arch.values())
+        processed_arch = dict(zip(layer_types, archs))
+
+        # Then, reconstruct params
+        # Missing key(s) in state_dict: "log_std", "action_net.bias", "value_net.bias"
+        processed_params = params
+        processed_params.update(aux)
+
+        return processed_arch, processed_params
 
     def remove_indices(self, tensor, indices_to_remove, row_or_col=None):
         if tensor.dim() == 1: # for bias
@@ -61,37 +76,44 @@ class Trainer:
             new_tensor = new_tensor.reshape(new_units, tensor.shape[1])
         elif row_or_col == 'col':
             new_units = tensor.shape[1] - len(indices_to_remove)
-            new_tensor = new_tensor.reshape(tensor.shape[0], new_units) 
-            
+            new_tensor = new_tensor.reshape(tensor.shape[0], new_units)
+
         return new_tensor
-    
-    
-    def modify_network(self, weights, arch, dropout_rates, device):
-        """
-        ネットワークのアーキテクチャを修正し、指定割合のニューロンを削除。
-        """
-        new_arch = {}
-        modified_weights = {}
 
-        for layer_type, layers in arch.items():  # layer_type は 'pi' または 'vf'
-            new_arch[layer_type] = []
-            for idx, units in enumerate(layers):
-                # 各層のドロップアウト率を取得
-                dropout_rate = dropout_rates[layer_type][idx]
-                new_units = int(units * (1 - dropout_rate))  # 削除後のユニット数
-                new_arch[layer_type].append(new_units)
+    def modify_network(self, params, arch, dropout_rates):
+        for layer_type, layers in arch.items():
+            for layer_idx in range(len(layers)):
+                if dropout_rates[layer_type][layer_idx] > 0.0:
+                    num_to_drop = int(layers[layer_idx] * dropout_rates[layer_type][layer_idx])
+                    if num_to_drop == 0:
+                        continue
 
-            # 重みを修正
-            for key, value in weights.items():
-                if layer_type in key and "weight" in key:
-                    # 各層の削除されたニューロンに対応する重みを除外
-                    layer_idx = int(key.split(".")[1])  # 層のインデックスを取得
-                    if layer_idx < len(layers):
-                        new_units = new_arch[layer_type][layer_idx]
-                        modified_weights[key] = value[:new_units, :new_units].to(device)
-                    else:
-                        modified_weights[key] = value.to(device)
-                else:
-                    modified_weights[key] = value.to(device)
+                    # First, modify network architecture
+                    arch[layer_type][layer_idx] -= num_to_drop
 
-        return new_arch, modified_weights
+                    # Then, modify network parameters
+                    indices_to_remove = np.random.choice(layers[layer_idx], num_to_drop, replace=False)
+                    # print(layer_type, layer_idx, len(indices_to_remove))
+
+                    # Process weights
+                    weight_key_1 = f"mlp_extractor.{layer_type}_net.{2 * layer_idx}.weight"  # Adjust the key format as per your architecture
+                    if weight_key_1 in params:
+                        params[weight_key_1] = self.remove_indices(params[weight_key_1], indices_to_remove, row_or_col='row')
+                    
+                    # Process biases
+                    bias_key = f"mlp_extractor.{layer_type}_net.{2 * layer_idx}.bias"  # Adjust the key format as per your architecture
+                    if bias_key in params:
+                        params[bias_key] = self.remove_indices(params[bias_key], indices_to_remove)
+
+                    # Process weights
+                    weight_key_2 = f"mlp_extractor.{layer_type}_net.{2 * (layer_idx + 1)}.weight"  # Adjust the key format as per your architecture
+                    if weight_key_2 in params:
+                        params[weight_key_2] = self.remove_indices(params[weight_key_2], indices_to_remove, row_or_col='col')
+
+                    # Process output
+                    output_key = "action_net.weight" if layer_type == 'policy' else "value_net.weight"
+                    if output_key in params and layer_idx == len(layers) - 1 :
+                        params[output_key] = self.remove_indices(params[output_key], indices_to_remove, row_or_col='col')
+
+        return arch, params
+
