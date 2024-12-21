@@ -1,61 +1,61 @@
-import yaml
-import json
-import gymnasium as gym
-import numpy as np
-from multiprocessing import Process, Queue
-import stable_baselines3
-import torch
-import torch.nn as nn
-import matplotlib.pyplot as plt
 import os
+import yaml
+import argparse
+import pprint
+import numpy as np
+import matplotlib.pyplot as plt
 import matplotlib.ticker as ticker
+from multiprocessing import Process, Queue
+
 from permanent_dropout.model import Model
 from permanent_dropout.trainer import Trainer
+from permanent_dropout.logger import Logger
 
 
 def load_config(file_path):
     with open(file_path, 'r', encoding='utf-8') as file:
         return yaml.safe_load(file)
 
-def follower_process(queue, weight_queue, worker_id, cfg):
+def eval_only(cfg, load_from):
+    # Load the model
+    model = Model(cfg)
+    model.load_policy(load_from)  # Assuming you have a method to load the trained policy
+
+    # Evaluate the policy
+    print('\n------------------- Start Evaluation ! ---------------------')
+    total_reward = model.evaluate_policy()
+    print(model.policy_kwargs["net_arch"])
+    print(f"Evaluation Reward: {total_reward}")
+
+def follower_process(result_queue, network_queue, worker_id, cfg):
     """
     各workerプロセスでPPOを学習し、評価結果をleaderに送信。
     """
     # Create variable architecture model
     model = Model(cfg)
     env = model.env
-    # cfg.update({'observation_dim': env.observation_space.shape[0]})
-    # cfg.update({'action_dim': env.action_space.shape[0]})
 
     for iteration in range(cfg['num_iterations']):
-        # Update policy weights
+        # Update policy params
         model.learn(total_timesteps=cfg['timesteps_per_iteration'])
 
         # policy evaluation
         total_reward = model.evaluate_policy()
 
-        # send current policy weights and architecture to the leader
-        queue.put((worker_id, iteration, total_reward, model.policy_kwargs, model.policy.state_dict()))
+        # send current policy params and architecture to the leader
+        result_queue.put((worker_id, total_reward, model.policy_kwargs, model.policy.state_dict()))
 
-        # receive new policy weights and architecture from the leader
-        new_arch, new_weights = weight_queue.get()
+        # receive new policy params and architecture from the leader
+        new_arch, new_params = network_queue.get()
 
         if model.policy_kwargs['net_arch'] != new_arch: # net arch has been changed
             new_kwargs = model.policy_kwargs.copy()
             new_kwargs['net_arch'] = new_arch
-            print(new_kwargs)
-            for key, val in new_weights.items():
-                print(key, val.shape)
-            model.make_policy(env, new_kwargs, new_weights)
+            model.make_policy(env, new_kwargs, new_params)
         else:
-            model.make_policy(env, None, new_weights)
-        # model.model = new_model
+            model.make_policy(env, model.policy_kwargs, new_params)
 
-    # Save the final model
-    final_model_path = os.path.join(cfg['logdir'], 'terminal')
-    model.save_policy(save_to=final_model_path)
-
-def leader_process(queue, weight_queue, cfg):
+def leader_process(result_queue, network_queue, cfg):
     """
     leaderが評価結果を収集し、収益を平滑化、傾きを計算、必要ならネットワークを再構築。
     """
@@ -64,8 +64,8 @@ def leader_process(queue, weight_queue, cfg):
     ema_window = cfg['ema_window']
     dropout_rates = cfg['dropout_rates']
     slope_threshold = cfg['slope_threshold']
-    device = cfg['device']
     trainer = Trainer(cfg)
+    logger = Logger(cfg)
 
     all_rewards = []
     ema_rewards = []
@@ -74,32 +74,27 @@ def leader_process(queue, weight_queue, cfg):
     iteration_list = []
 
     for iteration in range(num_iterations):
+        terminate = iteration == num_iterations - 1
+        if iteration == 0:
+            print('\n---------------------- Start Training ! -----------------------')
         rewards = []
-        weights = []
+        params = []
         policy_arch = None
         iteration_list.append(iteration)
         results = []
+        logger.step()
 
         # 各workerから結果を収集
         for _ in range(num_workers):
-            worker_id, iter_id, reward, policy_kwargs, policy_weight = queue.get()
+            worker_id, reward, policy_kwargs, policy_weight = result_queue.get()
             rewards.append(reward)
             rewards_per_worker[worker_id].append(reward)
-            weights.append(policy_weight)
+            params.append(policy_weight)
             policy_arch = policy_kwargs["net_arch"]
             results.append((worker_id, reward, policy_kwargs, policy_weight))
 
-        # sort results in reward decending order
-        results.sort(key=lambda x: x[1], reverse=True)
-
-        # find the best worker and save at every checkpoint
-        if iteration > 0 and iteration % cfg['checkpoint_interval'] == 0:
-            best_worker = results[0][0]
-            best_policy_kwargs = results[best_worker][2]
-            best_policy_weight = results[best_worker][3]
-            best_actor = best_policy_kwargs['net_arch']['pi']
-            best_critic = best_policy_kwargs['net_arch']['vf']
-            print(best_worker)
+        if iteration > 0 and iteration % cfg['checkpoint_interval'] == 0 or terminate:
+            logger.save_checkpoint(results)
             
 
         # 統計情報を表示
@@ -130,10 +125,10 @@ def leader_process(queue, weight_queue, cfg):
             print(f"  - {layer}: {shape}")
 
         # ネットワークの修正条件
-        if slope < slope_threshold and len(weights) > 0:
-            print(f"-----------Iteration {iteration}: Modifying network architecture----------")
-            avg_weights = trainer.average_weights(weights)
-            arch, params, aux = trainer.preprocess(raw_arch=policy_arch, raw_params=avg_weights)
+        if slope < slope_threshold and len(params) > 0:
+            print(f"\n----------- Iteration {iteration}: Modifying network architecture ----------")
+            avg_params = trainer.average_params(params)
+            arch, params, aux = trainer.preprocess(raw_arch=policy_arch, raw_params=avg_params)
             modified_arch, modified_params = trainer.modify_network(params, arch, dropout_rates)
             modified_arch, modified_params = trainer.reconstruct(modified_arch, modified_params, aux)
 
@@ -141,7 +136,7 @@ def leader_process(queue, weight_queue, cfg):
             ema_rewards = []
         else:
             modified_arch = policy_arch
-            modified_weights = trainer.average_weights(weights)
+            modified_params = trainer.average_params(params)
 
         # ニューロン数を記録
         total_neurons = sum(sum(units) for units in modified_arch.values())
@@ -149,7 +144,7 @@ def leader_process(queue, weight_queue, cfg):
 
         # 重みと新しいアーキテクチャを各workerに送信
         for _ in range(num_workers):
-            weight_queue.put((modified_arch, modified_weights))
+            network_queue.put((modified_arch, modified_params))
 
     # Plot the learning curve with dual y-axes
     fig, ax1 = plt.subplots(figsize=(10, 5))
@@ -198,26 +193,44 @@ def leader_process(queue, weight_queue, cfg):
     plt.show()
 
 
-if __name__ == "__main__":
-    import pprint
+def main():
+    # Parse command-line arguments
+    parser = argparse.ArgumentParser(description='Train or evaluate the policy.')
+    parser.add_argument('--eval', type=str, help='Only evaluate a trained policy. Specify the directory to load the policy from.')
+    parser.add_argument('--logdir', type=str, help='Specify the directory for logging.')
+    args = parser.parse_args()
+
+    # Load configuration
     cfg = load_config('config.yaml')
-    # Pretty-print the configuration
-    pprint.pprint(cfg)
+    
+    if args.logdir:
+        cfg['logdir'] = args.logdir
+
+    # assert if dropout rates and net_arch are consistent
     assert len(cfg['dropout_rates']['policy']) == len(cfg['policy_kwargs']['net_arch']['pi'])
     assert len(cfg['dropout_rates']['value']) == len(cfg['policy_kwargs']['net_arch']['vf'])
-    result_queue = Queue()
-    weight_queue = Queue()
 
-    # Workerプロセスの作成
-    workers = []
-    for worker_id in range(cfg['num_workers']):
-        p = Process(target=follower_process, args=(result_queue, weight_queue, worker_id, cfg))
-        workers.append(p)
-        p.start()
+    if args.eval:
+        # Evaluate the policy
+        eval_only(cfg, load_from=args.eval)
+    else:
+        # Training
+        result_queue = Queue()
+        network_queue = Queue()
 
-    # Leaderプロセスの実行
-    leader_process(result_queue, weight_queue, cfg)
+        # Worker processes
+        workers = []
+        for worker_id in range(cfg['num_workers']):
+            p = Process(target=follower_process, args=(result_queue, network_queue, worker_id, cfg))
+            workers.append(p)
+            p.start()
 
-    # Workerプロセスの終了を待つ
-    for p in workers:
-        p.join()
+        # Leader process
+        leader_process(result_queue, network_queue, cfg)
+
+        # Wait for worker processes to finish
+        for p in workers:
+            p.join()
+
+if __name__ == "__main__":
+    main()

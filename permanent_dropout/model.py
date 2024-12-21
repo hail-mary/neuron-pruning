@@ -1,6 +1,7 @@
 import gymnasium as gym
 import stable_baselines3
 import torch
+import os
 import numpy as np
 import cloudpickle
 
@@ -19,10 +20,10 @@ class Model:
         return self.model.policy
     
     def make_policy(self, env, policy_kwargs=None, policy_weights=None):
-        if policy_kwargs is None:
+        if policy_kwargs is None: # to initialize
             policy_kwargs = self.cfg['policy_kwargs']
 
-        if isinstance(policy_kwargs['activation_fn'], str):
+        if isinstance(policy_kwargs['activation_fn'], str): # load from cfg
             activation_fn = getattr(torch.nn, policy_kwargs['activation_fn'])
         else:
             activation_fn = policy_kwargs['activation_fn']
@@ -33,7 +34,7 @@ class Model:
         )
         algorithm = getattr(stable_baselines3, self.cfg['algorithm'])
         device = self.cfg['device']
-
+        # self.model = None
         self.model = algorithm("MlpPolicy", env, verbose=0, policy_kwargs=policy_kwargs, device=device)
         if policy_weights is not None:
             self.model.policy.load_state_dict(policy_weights)
@@ -47,16 +48,15 @@ class Model:
             cloudpickle.dump(policy_weights, f)
 
     def load_policy(self, load_from=''):
-        with open(f'{load_from}/policy_kwargs.pkl', 'rb') as f:
-            deserialized_kwargs = cloudpickle.load(f)
-        with open(f'{load_from}/policy_weights.pkl', 'rb') as f:
-            deserialized_weights = cloudpickle.load(f)
+        for file_name in os.listdir(load_from):
+            if 'policy_kwargs.pkl' in file_name:
+                with open(os.path.join(load_from, file_name), 'rb') as f:
+                    deserialized_kwargs = cloudpickle.load(f)
+            if 'policy_weights.pkl' in file_name:
+                with open(os.path.join(load_from, file_name), 'rb') as f:
+                    deserialized_weights = cloudpickle.load(f)
 
-        cfg = self.cfg.copy()
-        cfg['policy_kwargs'] = deserialized_kwargs
-        cfg['policy_weights'] = deserialized_weights
-        self.model = self.make_policy(self.env, cfg)
-        return self.model
+        self.make_policy(self.env, deserialized_kwargs, deserialized_weights)
 
     def learn(self, total_timesteps):
         self.model.learn(total_timesteps)

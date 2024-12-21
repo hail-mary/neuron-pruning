@@ -1,5 +1,5 @@
 # env
-env_name: "Ant-v4"
+env_name: "Ant-v5"
 render_mode: "rgb_array"
 # run
 num_workers: 5

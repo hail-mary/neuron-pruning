@@ -9,11 +9,11 @@ class Trainer:
         self.cfg = cfg
 
     
-    def average_weights(self, weights_list):
-        avg_weights = {}
-        for key in weights_list[0].keys():
-            avg_weights[key] = torch.stack([weights[key] for weights in weights_list]).mean(dim=0)
-        return avg_weights
+    def average_params(self, params_list):
+        avg_params = {}
+        for key in params_list[0].keys():
+            avg_params[key] = torch.stack([params[key] for params in params_list]).mean(dim=0)
+        return avg_params
 
     def preprocess(self, raw_arch, raw_params):
         # First, preprocess arch
