@@ -1,27 +1,32 @@
-# env
+# Environment settings
 env_name: "Ant-v5"
 render_mode: "rgb_array"
-# run
-num_workers: 5
-num_iterations: 10
-timesteps_per_iteration: 1000
-ema_window: 4  # 平滑化するIteration
+
+# Run settings
+num_workers: 5  # Number of parallel workers
+num_iterations: 2000  # Total number of iterations to run
+timesteps_per_iteration: 1000  # Timesteps per iteration
+ema_window: 10  # Exponential moving average window size
 dropout_rates:
-  policy: [0.05, 0.1]  # Actorネットワーク各層のドロップアウト率
-  value: [0.0, 0.0]   # Criticネットワーク各層のドロップアウト率
-slope_threshold: 0.1  # ネットワーク修正の閾値
-# model
-algorithm: "PPO"
+  policy: [0.05, 0.1]  # Dropout rates for each layer in the Actor network
+  value: [0.0, 0.0]   # Dropout rates for each layer in the Critic network
+slope_threshold: 0.1  # Threshold for network adjustments
+
+# Model settings
+algorithm: "PPO"  # Algorithm to use
 policy_kwargs:
-  activation_fn: "ReLU"
+  activation_fn: "ReLU"  # Activation function for the network
   net_arch: {
-    pi: [64, 64],
-    vf: [64, 64]
+    pi: [64, 64],  # Architecture for the policy network
+    vf: [64, 64]   # Architecture for the value function network
   }
-# device
-device: "cpu"  # or "cuda"
-# logdir
+
+# Device settings
+device: "cpu"  # Device to run the model on (options: "cpu" or "cuda")
+
+# Logging settings
 logdir: "logs"  # Directory to save checkpoints and models
-# checkpoint_interval
-checkpoint_interval: 5  # Save a checkpoint every 5 iterations
-average_weights: True
+
+# Checkpoint settings
+checkpoint_interval: 1000  # Save a checkpoint every specified number of iterations
+average_weights: True  # Whether to average weights across workers
