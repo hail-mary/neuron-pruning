@@ -61,7 +61,7 @@ class Model:
     def learn(self, total_timesteps):
         self.model.learn(total_timesteps)
 
-    def evaluate_policy(self, num_eval_episodes=5, num_eval_steps_per_episode=1000):
+    def evaluate_policy(self, num_eval_episodes=1, num_eval_steps_per_episode=1000):
         total_rewards = []
         for _ in range(num_eval_episodes):
             observation, info = self.env.reset()

@@ -3,9 +3,8 @@ import yaml
 import argparse
 import pprint
 import numpy as np
-import matplotlib.pyplot as plt
-import matplotlib.ticker as ticker
 from multiprocessing import Process, Queue
+import time
 
 from permanent_dropout.model import Model
 from permanent_dropout.trainer import Trainer
@@ -29,7 +28,7 @@ def eval_only(cfg, load_from):
 
 def follower_process(result_queue, network_queue, worker_id, cfg):
     """
-    各workerプロセスでPPOを学習し、評価結果をleaderに送信。
+    Each worker process learns and sends evaluation results to the leader.
     """
     # Create variable architecture model
     model = Model(cfg)
@@ -39,16 +38,16 @@ def follower_process(result_queue, network_queue, worker_id, cfg):
         # Update policy params
         model.learn(total_timesteps=cfg['timesteps_per_iteration'])
 
-        # policy evaluation
+        # Policy evaluation
         total_reward = model.evaluate_policy()
 
-        # send current policy params and architecture to the leader
+        # Send current policy params and architecture to the leader
         result_queue.put((worker_id, total_reward, model.policy_kwargs, model.policy.state_dict()))
 
-        # receive new policy params and architecture from the leader
+        # Receive new policy params and architecture from the leader
         new_arch, new_params = network_queue.get()
 
-        if model.policy_kwargs['net_arch'] != new_arch: # net arch has been changed
+        if model.policy_kwargs['net_arch'] != new_arch:  # Net architecture has been changed
             new_kwargs = model.policy_kwargs.copy()
             new_kwargs['net_arch'] = new_arch
             model.make_policy(env, new_kwargs, new_params)
@@ -57,8 +56,11 @@ def follower_process(result_queue, network_queue, worker_id, cfg):
 
 def leader_process(result_queue, network_queue, cfg):
     """
-    leaderが評価結果を収集し、収益を平滑化、傾きを計算、必要ならネットワークを再構築。
+    The leader collects evaluation results, smooths rewards, calculates slope, and reconstructs the network if necessary.
     """
+    # Start timing the training
+    start_time = time.time()
+
     num_workers = cfg['num_workers']
     num_iterations = cfg['num_iterations']
     ema_window = cfg['ema_window']
@@ -69,9 +71,11 @@ def leader_process(result_queue, network_queue, cfg):
 
     all_rewards = []
     ema_rewards = []
-    rewards_per_worker = [[] for _ in range(num_workers)]  # 各workerの収益記録
-    neuron_counts = []  # ニューロン数の推移
+    rewards_per_worker = [[] for _ in range(num_workers)]  # Record rewards for each worker
+    neuron_counts = []  # Track neuron count changes
     iteration_list = []
+    best_policy_arch = None
+    best_reward = float('-inf')
 
     for iteration in range(num_iterations):
         terminate = iteration == num_iterations - 1
@@ -84,7 +88,7 @@ def leader_process(result_queue, network_queue, cfg):
         results = []
         logger.step()
 
-        # 各workerから結果を収集
+        # Collect results from each worker
         for _ in range(num_workers):
             worker_id, reward, policy_kwargs, policy_weight = result_queue.get()
             rewards.append(reward)
@@ -93,16 +97,20 @@ def leader_process(result_queue, network_queue, cfg):
             policy_arch = policy_kwargs["net_arch"]
             results.append((worker_id, reward, policy_kwargs, policy_weight))
 
+            # Track best reward and corresponding architecture
+            if reward > best_reward:
+                best_reward = reward
+                best_policy_arch = policy_arch.copy()
+
         if iteration > 0 and iteration % cfg['checkpoint_interval'] == 0 or terminate:
             logger.save_checkpoint(results)
-            
 
-        # 統計情報を表示
+        # Display statistics
         mean_reward = np.mean(rewards)
         std_reward = np.std(rewards)
         all_rewards.append(mean_reward)
 
-        # EMAを更新
+        # Update EMA
         alpha = 2 / (ema_window + 1)
         if ema_rewards:
             ema_reward = alpha * mean_reward + (1 - alpha) * ema_rewards[-1]
@@ -110,88 +118,68 @@ def leader_process(result_queue, network_queue, cfg):
             ema_reward = mean_reward
         ema_rewards.append(ema_reward)
 
-        # 傾きを計算
+        # Calculate slope
         if len(ema_rewards) > ema_window:
             slope = (np.polyfit(iteration_list, ema_rewards, deg=1))[0]
         else:
             slope = float("nan")
 
-        # 出力: 統計情報
+        # Output: statistics
         print(f"\nIteration {iteration}: Reward Mean = {mean_reward:.2f}, Std = {std_reward:.2f}, Slope = {slope:.4f}")
 
-        # 出力: アーキテクチャ情報
+        # Output: architecture information
         print("Current Policy Architecture:")
         for layer, shape in policy_arch.items():
             print(f"  - {layer}: {shape}")
-
-        # ネットワークの修正条件
+        
+        # Network modification condition
         if slope < slope_threshold and len(params) > 0:
             print(f"\n----------- Iteration {iteration}: Modifying network architecture ----------")
-            avg_params = trainer.average_params(params)
-            arch, params, aux = trainer.preprocess(raw_arch=policy_arch, raw_params=avg_params)
-            modified_arch, modified_params = trainer.modify_network(params, arch, dropout_rates)
-            modified_arch, modified_params = trainer.reconstruct(modified_arch, modified_params, aux)
-
+            if cfg['average_weights']:
+                avg_params = trainer.average_params(params)
+                arch, params, aux = trainer.preprocess(raw_arch=policy_arch, raw_params=avg_params)
+                modified_arch, modified_params = trainer.modify_network(params, arch, dropout_rates)
+                modified_arch, modified_params = trainer.reconstruct(modified_arch, modified_params, aux)
+            else:
+                # If not averaging weights, modify each worker's params individually
+                for worker_id in range(num_workers):
+                    arch, params[worker_id], aux = trainer.preprocess(raw_arch=policy_arch.copy(), raw_params=params[worker_id])
+                    modified_arch, modified_params[worker_id] = trainer.modify_network(params[worker_id], arch, dropout_rates)
+                    modified_arch, modified_params[worker_id] = trainer.reconstruct(modified_arch, modified_params[worker_id], aux)
+            
             iteration_list = []
             ema_rewards = []
+
         else:
             modified_arch = policy_arch
-            modified_params = trainer.average_params(params)
 
-        # ニューロン数を記録
+            if cfg['average_weights']:
+                modified_params = trainer.average_params(params)
+            else:
+                # Set different params for each worker
+                modified_params = [params[worker_id] for worker_id in range(num_workers)]
+
+        # Record neuron count
         total_neurons = sum(sum(units) for units in modified_arch.values())
         neuron_counts.append(total_neurons)
 
-        # 重みと新しいアーキテクチャを各workerに送信
-        for _ in range(num_workers):
-            network_queue.put((modified_arch, modified_params))
+        # Send weights and new architecture to each worker
+        for worker_id in range(num_workers):
+            if cfg['average_weights']:
+                network_queue.put((modified_arch, modified_params))
+            else:
+                network_queue.put((modified_arch, modified_params[worker_id]))   
 
-    # Plot the learning curve with dual y-axes
-    fig, ax1 = plt.subplots(figsize=(10, 5))
+    logger.plot_learning_curve(all_rewards, rewards_per_worker, neuron_counts)
 
-    # Plot all_rewards on the first y-axis
-    ax1.set_xlabel('Iteration')
-    ax1.set_ylabel('Mean Reward', color='tab:blue')
-    ax1.plot(all_rewards, label='Mean Reward', color='tab:blue')
-    ax1.tick_params(axis='y', labelcolor='tab:blue')
+    # End timing the training
+    end_time = time.time()
 
-    # Fill between for mean reward range
-    iterations = range(len(all_rewards))
-    rewards_min = np.min(rewards_per_worker, axis=0)
-    rewards_max = np.max(rewards_per_worker, axis=0)
-    ax1.fill_between(
-        iterations,
-        rewards_min,
-        rewards_max,
-        color="blue",
-        alpha=0.2,
-        label="Reward Range",
-    )
+    # Calculate average reward
+    average_reward = sum(all_rewards) / len(all_rewards)
 
-    # Ensure x-axis ticks are integers
-    ax1.xaxis.set_major_locator(ticker.MaxNLocator(integer=True))
-
-    # Create a second y-axis to plot total_neurons
-    ax2 = ax1.twinx()
-    ax2.set_ylabel('Total Neurons', color='tab:orange')
-    ax2.plot(neuron_counts, label='Total Neurons', color='tab:orange', linestyle='--')
-    ax2.tick_params(axis='y', labelcolor='tab:orange')
-
-    # Ensure y-axis ticks for total neurons are integers
-    ax2.yaxis.set_major_locator(ticker.MaxNLocator(integer=True))
-
-    # Add a title and grid
-    plt.title('Learning Curve and Neuron Count')
-    fig.tight_layout()
-    plt.grid(True)
-
-    # Add legends
-    ax1.legend(loc='upper left')
-    ax2.legend(loc='upper right')
-
-    # Show the plot
-    plt.show()
-
+    # Log the training summary using the Logger class
+    logger.log_training_summary(start_time, end_time, best_reward, average_reward, best_policy_arch)
 
 def main():
     # Parse command-line arguments
@@ -206,7 +194,7 @@ def main():
     if args.logdir:
         cfg['logdir'] = args.logdir
 
-    # assert if dropout rates and net_arch are consistent
+    # Assert if dropout rates and net_arch are consistent
     assert len(cfg['dropout_rates']['policy']) == len(cfg['policy_kwargs']['net_arch']['pi'])
     assert len(cfg['dropout_rates']['value']) == len(cfg['policy_kwargs']['net_arch']['vf'])
 
