@@ -5,6 +5,8 @@ import pprint
 import numpy as np
 from multiprocessing import Process, Queue
 import time
+import json
+import matplotlib.pyplot as plt
 
 from permanent_dropout.model import Model
 from permanent_dropout.trainer import Trainer
@@ -15,14 +17,14 @@ def load_config(file_path):
     with open(file_path, 'r', encoding='utf-8') as file:
         return yaml.safe_load(file)
 
-def eval_only(cfg, load_from):
+def eval_only(cfg, load_from, record_video=False):
     # Load the model
     model = Model(cfg)
     model.load_policy(load_from)  # Assuming you have a method to load the trained policy
 
     # Evaluate the policy
     print('\n------------------- Start Evaluation ! ---------------------')
-    total_reward = model.evaluate_policy()
+    total_reward = model.evaluate_policy(record_video=record_video)
     print(model.policy_kwargs["net_arch"])
     print(f"Evaluation Reward: {total_reward}")
 
@@ -110,6 +112,10 @@ def leader_process(result_queue, network_queue, cfg):
         std_reward = np.std(rewards)
         all_rewards.append(mean_reward)
 
+        # Log the iteration data
+        total_neurons = sum(sum(units) for units in policy_arch.values())
+        logger.log_iteration(mean_reward, std_reward, total_neurons)
+
         # Update EMA
         alpha = 2 / (ema_window + 1)
         if ema_rewards:
@@ -170,6 +176,9 @@ def leader_process(result_queue, network_queue, cfg):
             else:
                 network_queue.put((modified_arch, modified_params[worker_id]))   
 
+        # Save the training history
+        logger.save_history()
+
     logger.plot_learning_curve(all_rewards, rewards_per_worker, neuron_counts)
 
     # End timing the training
@@ -186,6 +195,8 @@ def main():
     parser = argparse.ArgumentParser(description='Train or evaluate the policy.')
     parser.add_argument('--eval', type=str, help='Only evaluate a trained policy. Specify the directory to load the policy from.')
     parser.add_argument('--logdir', type=str, help='Specify the directory for logging.')
+    parser.add_argument('--record_video', action='store_true', help='Record video of the best model during evaluation.')
+    parser.add_argument('--plot', type=str, help='Plot learning curve from the specified JSON file.')
     args = parser.parse_args()
 
     # Load configuration
@@ -200,7 +211,13 @@ def main():
 
     if args.eval:
         # Evaluate the policy
-        eval_only(cfg, load_from=args.eval)
+        eval_only(cfg, load_from=args.eval, record_video=args.record_video)
+
+    elif args.plot:
+        # Plot learning curve from the specified JSON file
+        logger = Logger(cfg, save_cfg=False)
+        logger.plot_learning_curve_from_json(args.plot)
+
     else:
         # Training
         result_queue = Queue()

@@ -4,7 +4,7 @@ render_mode: "rgb_array"
 # run
 num_workers: 5
 num_iterations: 10
-timesteps_per_iteration: 1
+timesteps_per_iteration: 1000
 ema_window: 4  # 平滑化するIteration
 dropout_rates:
   policy: [0.05, 0.1]  # Actorネットワーク各層のドロップアウト率

@@ -6,11 +6,18 @@ import warnings
 import matplotlib.pyplot as plt
 import numpy as np
 import matplotlib.ticker as ticker
+import json
 
 
 class Logger:
-    def __init__(self, cfg):     
+    def __init__(self, cfg, save_cfg=True):     
         self.iteration = 0
+        self.history = {
+            "iterations": [],
+            "mean_rewards": [],
+            "std_rewards": [],
+            "neuron_counts": []
+        }
         # make log directory if not exists
         if not os.path.exists(cfg['logdir']):
             os.mkdir(cfg['logdir'])
@@ -22,10 +29,11 @@ class Logger:
         pprint.pprint(cfg)
 
         # save configuration
-        config_dir = os.path.join(cfg['logdir'], 'config.yaml')
-        with open(config_dir, 'w') as file:
-            yaml.dump(cfg, file, indent=4)
-            print(f'\n >> saved to {config_dir}.')
+        if save_cfg:
+            config_dir = os.path.join(cfg['logdir'], 'config.yaml')
+            with open(config_dir, 'w') as file:
+                yaml.dump(cfg, file, indent=4)
+                print(f'\n >> saved to {config_dir}.')
 
         self.cfg = cfg
     
@@ -108,8 +116,30 @@ class Logger:
         legend1.set_zorder(10)
         legend2.set_zorder(10)
 
-        # Show the plot
-        plt.show()
+        # Determine the maximum iteration and format it
+        max_iteration = len(all_rewards) * 1000  # Assuming each step represents 1000 iterations
+        if max_iteration >= 1_000_000:
+            iteration_str = f"{max_iteration // 1_000_000}M"
+        elif max_iteration >= 1_000:
+            iteration_str = f"{max_iteration // 1_000}K"
+        else:
+            iteration_str = str(max_iteration)
+
+        # Save the plot as an EPS file with the formatted iteration count
+        eps_file_path = os.path.join(self.cfg['logdir'], f'learning_curve_{iteration_str}.eps')
+        plt.savefig(eps_file_path, format='eps')
+        print(f"Learning curve saved as {eps_file_path}")
+
+        # Save the plot as a PNG file with the formatted iteration count
+        png_file_path = os.path.join(self.cfg['logdir'], f'learning_curve_{iteration_str}.png')
+        plt.savefig(png_file_path, format='png')
+        print(f"Learning curve saved as {png_file_path}")
+
+        # Comment out or remove plt.show() to prevent displaying the plot
+        # plt.show()
+
+        # Save the training history
+        self.save_history()
 
     def log_training_summary(self, start_time, end_time, best_reward, average_reward, best_policy_arch):
         # Calculate the duration in hours
@@ -138,4 +168,65 @@ class Logger:
         with open(summary_path, 'a') as summary_file:
             summary_file.write(summary)
 
-       
+    def log_iteration(self, mean_reward, std_reward, total_neurons):
+        # Log the data for each iteration
+        self.history["iterations"].append(self.iteration)
+        self.history["mean_rewards"].append(mean_reward)
+        self.history["std_rewards"].append(std_reward)
+        self.history["neuron_counts"].append(total_neurons)
+
+    def save_history(self):
+        # Save the history to a JSON file
+        history_path = os.path.join(self.cfg['logdir'], 'history.json')
+        with open(history_path, 'w') as f:
+            json.dump(self.history, f, indent=4)
+        print(f"Training history saved as {history_path}")
+
+    def plot_learning_curve_from_json(self, json_file):
+        with open(json_file, 'r') as f:
+            history = json.load(f)
+
+        iterations = history['iterations']
+        mean_rewards = history['mean_rewards']
+        std_rewards = history['std_rewards']
+        neuron_counts = history['neuron_counts']
+
+        # Plot the learning curve with dual y-axes
+        fig, ax1 = plt.subplots(figsize=(10, 5))
+
+        # Plot all_rewards on the first y-axis
+        ax1.set_xlabel('Environment steps [1e3]', fontsize=20)
+        ax1.set_ylabel('Cumulative Reward', fontsize=20)
+        ax1.plot(mean_rewards, label='Mean Reward')
+        ax1.tick_params(axis='y', labelsize=12)
+
+        # Fill between for mean reward range
+        plt.fill_between(iterations, 
+                        np.array(mean_rewards) - np.array(std_rewards), 
+                        np.array(mean_rewards) + np.array(std_rewards), 
+                        color='blue', alpha=0.2, label='Reward Std Dev')
+
+        # Ensure x-axis ticks are integers
+        ax1.xaxis.set_major_locator(ticker.MaxNLocator(integer=True))
+        ax1.tick_params(axis='x', labelsize=12)
+
+        # Create a second y-axis to plot total_neurons
+        ax2 = ax1.twinx()
+        ax2.set_ylabel('Total Neurons', fontsize=20)
+        ax2.plot(neuron_counts, label='Total Neurons', color='red', linestyle='--')
+        ax2.tick_params(axis='y', labelsize=12)
+
+        # Ensure y-axis ticks for total neurons are integers
+        ax2.yaxis.set_major_locator(ticker.MaxNLocator(integer=True))
+
+        fig.tight_layout()
+        plt.grid(True)
+
+        # Add legends and bring them to the front
+        legend1 = ax1.legend(loc='upper left', fontsize=14)
+        legend2 = ax2.legend(loc='upper right', fontsize=14)
+        legend1.set_zorder(10)
+        legend2.set_zorder(10)
+
+        # Comment out or remove plt.show() to prevent displaying the plot
+        plt.show()

@@ -1,6 +1,0 @@
-Training Summary:
------------------
-Total Training Time: 0.01 hours
-Best Reward: 1011.7436493783321
-Average Reward: 996.91
-Best Policy Architecture: {'pi': [64, 64], 'vf': [64, 64]}
