@@ -14,6 +14,11 @@ class Trainer:
         for key in params_list[0].keys():
             avg_params[key] = torch.stack([params[key] for params in params_list]).mean(dim=0)
         return avg_params
+    
+    def calculate_norms(self, pre_avg_params, avg_params):
+        pre_avg_norm = torch.cat([p.flatten() for p in pre_avg_params.values()]).norm()
+        avg_norm = torch.cat([p.flatten() for p in avg_params.values()]).norm()
+        return pre_avg_norm, avg_norm
 
     def preprocess(self, raw_arch, raw_params):
         # First, preprocess arch

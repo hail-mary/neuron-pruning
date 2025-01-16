@@ -11,7 +11,7 @@ import json
 
 class Logger:
     def __init__(self, cfg, save_cfg=True):     
-        self.iteration = 0
+        self.iteration = -1
         self.history = {
             "iterations": [],
             "mean_rewards": [],
@@ -24,12 +24,11 @@ class Logger:
         else:
             warnings.warn(f'{cfg["logdir"]} already exists. Logs may be overwritten.')
 
-         # Pretty-print the configuration
-        print('\n------------------ Loaded Configuration --------------------')
-        pprint.pprint(cfg)
-
         # save configuration
         if save_cfg:
+            # Pretty-print the configuration
+            print('\n#------------------ Loaded Configuration --------------------#')
+            pprint.pprint(cfg)
             config_dir = os.path.join(cfg['logdir'], 'config.yaml')
             with open(config_dir, 'w') as file:
                 yaml.dump(cfg, file, indent=4)
@@ -79,7 +78,7 @@ class Logger:
         ax1.set_xlabel('Environment steps [1e3]', fontsize=20)
         ax1.set_ylabel('Cumulative Reward', fontsize=20)
         ax1.plot(all_rewards, label='Mean Reward')
-        ax1.tick_params(axis='y', labelsize=12)
+        ax1.tick_params(axis='y', labelsize=15)
 
         # Fill between for mean reward range
         iterations = range(len(all_rewards))
@@ -96,13 +95,14 @@ class Logger:
 
         # Ensure x-axis ticks are integers
         ax1.xaxis.set_major_locator(ticker.MaxNLocator(integer=True))
-        ax1.tick_params(axis='x', labelsize=12)
+        ax1.tick_params(axis='x', labelsize=15)
+        ax1.set_xticks(np.arange(0, self.cfg['num_iterations']+1, step=100))  # Adjust step as needed
 
         # Create a second y-axis to plot total_neurons
         ax2 = ax1.twinx()
         ax2.set_ylabel('Total Neurons', fontsize=20)
         ax2.plot(neuron_counts, label='Total Neurons', color='red', linestyle='--')
-        ax2.tick_params(axis='y', labelsize=12)
+        ax2.tick_params(axis='y', labelsize=15)
 
         # Ensure y-axis ticks for total neurons are integers
         ax2.yaxis.set_major_locator(ticker.MaxNLocator(integer=True))
@@ -112,12 +112,12 @@ class Logger:
 
         # Add legends and bring them to the front
         legend1 = ax1.legend(loc='upper left', fontsize=14)
-        legend2 = ax2.legend(loc='upper right', fontsize=14)
+        legend2 = ax2.legend(loc='lower right', fontsize=14, bbox_to_anchor=(1, 0.05))
         legend1.set_zorder(10)
         legend2.set_zorder(10)
 
         # Determine the maximum iteration and format it
-        max_iteration = len(all_rewards) * 1000  # Assuming each step represents 1000 iterations
+        max_iteration = len(all_rewards) * self.cfg['timesteps_per_iteration']  # Assuming each step represents 1000 iterations
         if max_iteration >= 1_000_000:
             iteration_str = f"{max_iteration // 1_000_000}M"
         elif max_iteration >= 1_000:
@@ -135,13 +135,10 @@ class Logger:
         plt.savefig(png_file_path, format='png')
         print(f"Learning curve saved as {png_file_path}")
 
-        # Comment out or remove plt.show() to prevent displaying the plot
-        # plt.show()
-
         # Save the training history
         self.save_history()
 
-    def log_training_summary(self, start_time, end_time, best_reward, average_reward, best_policy_arch):
+    def log_training_summary(self, start_time, end_time, best_reward, average_reward, best_policy_arch, best_iteration):
         # Calculate the duration in hours
         duration_seconds = end_time - start_time
         duration_hours = duration_seconds / 3600
@@ -151,8 +148,10 @@ class Logger:
             f"Training Summary:\n"
             f"-----------------\n"
             f"Total Training Time: {duration_hours:.2f} hours\n"
+            f"Dropout Rates: {self.cfg['dropout_rates']}\n"
+            f"Update Interval: {self.cfg['update_interval']}\n"
             f"Best Reward: {best_reward}\n"
-            f"Average Reward: {average_reward:.2f}\n"
+            f"Best Iteration: {best_iteration}\n"
             f"Best Policy Architecture: {best_policy_arch}\n"
         )
 
@@ -180,7 +179,6 @@ class Logger:
         history_path = os.path.join(self.cfg['logdir'], 'history.json')
         with open(history_path, 'w') as f:
             json.dump(self.history, f, indent=4)
-        print(f"Training history saved as {history_path}")
 
     def plot_learning_curve_from_json(self, json_file):
         with open(json_file, 'r') as f:
@@ -209,6 +207,7 @@ class Logger:
         # Ensure x-axis ticks are integers
         ax1.xaxis.set_major_locator(ticker.MaxNLocator(integer=True))
         ax1.tick_params(axis='x', labelsize=12)
+        ax1.set_xticks(np.arange(0, self.cfg['num_iterations']+1, step=100))  # Adjust step as needed
 
         # Create a second y-axis to plot total_neurons
         ax2 = ax1.twinx()
@@ -224,7 +223,7 @@ class Logger:
 
         # Add legends and bring them to the front
         legend1 = ax1.legend(loc='upper left', fontsize=14)
-        legend2 = ax2.legend(loc='upper right', fontsize=14)
+        legend2 = ax2.legend(loc='lower right', fontsize=14, bbox_to_anchor=(1, 0.05))
         legend1.set_zorder(10)
         legend2.set_zorder(10)
 

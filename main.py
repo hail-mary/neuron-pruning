@@ -1,12 +1,8 @@
-import os
 import yaml
 import argparse
-import pprint
 import numpy as np
 from multiprocessing import Process, Queue
 import time
-import json
-import matplotlib.pyplot as plt
 
 from permanent_dropout.model import Model
 from permanent_dropout.trainer import Trainer
@@ -23,7 +19,7 @@ def eval_only(cfg, load_from, record_video=False):
     model.load_policy(load_from)  # Assuming you have a method to load the trained policy
 
     # Evaluate the policy
-    print('\n------------------- Start Evaluation ! ---------------------')
+    print('\n#------------------- Start Evaluation ! ---------------------#')
     total_reward = model.evaluate_policy(record_video=record_video)
     print(model.policy_kwargs["net_arch"])
     print(f"Evaluation Reward: {total_reward}")
@@ -58,37 +54,33 @@ def follower_process(result_queue, network_queue, worker_id, cfg):
 
 def leader_process(result_queue, network_queue, cfg):
     """
-    The leader collects evaluation results, smooths rewards, calculates slope, and reconstructs the network if necessary.
+    The leader collects evaluation results and modify architecture.
     """
-    # Start timing the training
-    start_time = time.time()
-
     num_workers = cfg['num_workers']
     num_iterations = cfg['num_iterations']
-    ema_window = cfg['ema_window']
     dropout_rates = cfg['dropout_rates']
-    slope_threshold = cfg['slope_threshold']
     trainer = Trainer(cfg)
     logger = Logger(cfg)
 
     all_rewards = []
-    ema_rewards = []
     rewards_per_worker = [[] for _ in range(num_workers)]  # Record rewards for each worker
     neuron_counts = []  # Track neuron count changes
     iteration_list = []
     best_policy_arch = None
     best_reward = float('-inf')
 
+    print('\n#---------------------- Start Training ! -----------------------#')
+    # Start timing the training
+    start_time = time.time()
     for iteration in range(num_iterations):
         terminate = iteration == num_iterations - 1
-        if iteration == 0:
-            print('\n---------------------- Start Training ! -----------------------')
+        
         rewards = []
         params = []
         policy_arch = None
         iteration_list.append(iteration)
         results = []
-        logger.step()
+        logger.step() 
 
         # Collect results from each worker
         for _ in range(num_workers):
@@ -99,71 +91,46 @@ def leader_process(result_queue, network_queue, cfg):
             policy_arch = policy_kwargs["net_arch"]
             results.append((worker_id, reward, policy_kwargs, policy_weight))
 
-            # Track best reward and corresponding architecture
-            if reward > best_reward:
-                best_reward = reward
-                best_policy_arch = policy_arch.copy()
-
-        if iteration > 0 and iteration % cfg['checkpoint_interval'] == 0 or terminate:
-            logger.save_checkpoint(results)
-
-        # Display statistics
+        # Log statistics
         mean_reward = np.mean(rewards)
         std_reward = np.std(rewards)
         all_rewards.append(mean_reward)
+        new_best_reward = max(all_rewards)
+
+        # Track the best policy architecture
+        if new_best_reward > best_reward:
+            best_reward = new_best_reward
+            best_policy_arch = policy_arch.copy()
+            best_iteration = iteration
+            should_save = True
+
+        if should_save or terminate:
+            logger.save_checkpoint(results)
+            should_save = False
 
         # Log the iteration data
         total_neurons = sum(sum(units) for units in policy_arch.values())
         logger.log_iteration(mean_reward, std_reward, total_neurons)
 
-        # Update EMA
-        alpha = 2 / (ema_window + 1)
-        if ema_rewards:
-            ema_reward = alpha * mean_reward + (1 - alpha) * ema_rewards[-1]
-        else:
-            ema_reward = mean_reward
-        ema_rewards.append(ema_reward)
-
-        # Calculate slope
-        if len(ema_rewards) > ema_window:
-            slope = (np.polyfit(iteration_list, ema_rewards, deg=1))[0]
-        else:
-            slope = float("nan")
-
         # Output: statistics
-        print(f"\nIteration {iteration}: Reward Mean = {mean_reward:.2f}, Std = {std_reward:.2f}, Slope = {slope:.4f}")
+        print(f"\nIteration {iteration}: Reward Mean = {mean_reward:.2f}, Std = {std_reward:.2f}")
 
         # Output: architecture information
         print("Current Policy Architecture:")
         for layer, shape in policy_arch.items():
             print(f"  - {layer}: {shape}")
         
-        # Network modification condition
-        if slope < slope_threshold and len(params) > 0:
+
+        avg_params = trainer.average_params(params)
+        if iteration > 0 and iteration % cfg['update_interval'] == 0:
             print(f"\n----------- Iteration {iteration}: Modifying network architecture ----------")
-            if cfg['average_weights']:
-                avg_params = trainer.average_params(params)
-                arch, params, aux = trainer.preprocess(raw_arch=policy_arch, raw_params=avg_params)
-                modified_arch, modified_params = trainer.modify_network(params, arch, dropout_rates)
-                modified_arch, modified_params = trainer.reconstruct(modified_arch, modified_params, aux)
-            else:
-                # If not averaging weights, modify each worker's params individually
-                for worker_id in range(num_workers):
-                    arch, params[worker_id], aux = trainer.preprocess(raw_arch=policy_arch.copy(), raw_params=params[worker_id])
-                    modified_arch, modified_params[worker_id] = trainer.modify_network(params[worker_id], arch, dropout_rates)
-                    modified_arch, modified_params[worker_id] = trainer.reconstruct(modified_arch, modified_params[worker_id], aux)
-            
-            iteration_list = []
-            ema_rewards = []
+            arch, params, aux = trainer.preprocess(raw_arch=policy_arch, raw_params=avg_params)
+            modified_arch, modified_params = trainer.modify_network(params, arch, dropout_rates)
+            modified_arch, modified_params = trainer.reconstruct(modified_arch, modified_params, aux)
 
         else:
             modified_arch = policy_arch
-
-            if cfg['average_weights']:
-                modified_params = trainer.average_params(params)
-            else:
-                # Set different params for each worker
-                modified_params = [params[worker_id] for worker_id in range(num_workers)]
+            modified_params = avg_params
 
         # Record neuron count
         total_neurons = sum(sum(units) for units in modified_arch.values())
@@ -171,10 +138,7 @@ def leader_process(result_queue, network_queue, cfg):
 
         # Send weights and new architecture to each worker
         for worker_id in range(num_workers):
-            if cfg['average_weights']:
-                network_queue.put((modified_arch, modified_params))
-            else:
-                network_queue.put((modified_arch, modified_params[worker_id]))   
+            network_queue.put((modified_arch, modified_params))
 
         # Save the training history
         logger.save_history()
@@ -188,14 +152,14 @@ def leader_process(result_queue, network_queue, cfg):
     average_reward = sum(all_rewards) / len(all_rewards)
 
     # Log the training summary using the Logger class
-    logger.log_training_summary(start_time, end_time, best_reward, average_reward, best_policy_arch)
+    logger.log_training_summary(start_time, end_time, best_reward, average_reward, best_policy_arch, best_iteration)
 
 def main():
     # Parse command-line arguments
     parser = argparse.ArgumentParser(description='Train or evaluate the policy.')
     parser.add_argument('--eval', type=str, help='Only evaluate a trained policy. Specify the directory to load the policy from.')
     parser.add_argument('--logdir', type=str, help='Specify the directory for logging.')
-    parser.add_argument('--record_video', action='store_true', help='Record video of the best model during evaluation.')
+    parser.add_argument('--record', action='store_true', help='Record video of the best model during evaluation.')
     parser.add_argument('--plot', type=str, help='Plot learning curve from the specified JSON file.')
     args = parser.parse_args()
 
@@ -210,8 +174,10 @@ def main():
     assert len(cfg['dropout_rates']['value']) == len(cfg['policy_kwargs']['net_arch']['vf'])
 
     if args.eval:
+        import pathlib
+        cfg['logdir'] = pathlib.Path(args.eval).parent.parent
         # Evaluate the policy
-        eval_only(cfg, load_from=args.eval, record_video=args.record_video)
+        eval_only(cfg, load_from=args.eval, record_video=args.record)
 
     elif args.plot:
         # Plot learning curve from the specified JSON file

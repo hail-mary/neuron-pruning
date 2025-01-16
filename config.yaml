@@ -4,20 +4,19 @@ render_mode: "rgb_array"
 
 # Run settings
 num_workers: 5  # Number of parallel workers
-num_iterations: 2000  # Total number of iterations to run
+num_iterations: 1000  # Total number of iterations to run
 timesteps_per_iteration: 1000  # Timesteps per iteration
-ema_window: 10  # Exponential moving average window size
 dropout_rates:
-  policy: [0.05, 0.1]  # Dropout rates for each layer in the Actor network
+  policy: [0.3, 0.4]  # Dropout rates for each layer in the Actor network
   value: [0.0, 0.0]   # Dropout rates for each layer in the Critic network
-slope_threshold: 0.1  # Threshold for network adjustments
+update_interval: 5001  # Number of iterations between network adjustments
 
 # Model settings
 algorithm: "PPO"  # Algorithm to use
 policy_kwargs:
-  activation_fn: "ReLU"  # Activation function for the network
+  activation_fn: "SiLU"  # Activation function for the network
   net_arch: {
-    pi: [64, 64],  # Architecture for the policy network
+    pi: [256, 256],  # Architecture for the policy network
     vf: [64, 64]   # Architecture for the value function network
   }
 
@@ -26,7 +25,3 @@ device: "cpu"  # Device to run the model on (options: "cpu" or "cuda")
 
 # Logging settings
 logdir: "logs"  # Directory to save checkpoints and models
-
-# Checkpoint settings
-checkpoint_interval: 1000  # Save a checkpoint every specified number of iterations
-average_weights: True  # Whether to average weights across workers
