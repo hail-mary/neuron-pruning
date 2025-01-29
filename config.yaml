@@ -9,7 +9,7 @@ timesteps_per_iteration: 1000  # Timesteps per iteration
 dropout_rates:
   policy: [0.3, 0.4]  # Dropout rates for each layer in the Actor network
   value: [0.0, 0.0]   # Dropout rates for each layer in the Critic network
-update_interval: 5001  # Number of iterations between network adjustments
+update_interval: 250  # Number of iterations between network adjustments
 
 # Model settings
 algorithm: "PPO"  # Algorithm to use

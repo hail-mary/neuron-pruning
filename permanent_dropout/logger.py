@@ -180,52 +180,54 @@ class Logger:
         with open(history_path, 'w') as f:
             json.dump(self.history, f, indent=4)
 
-    def plot_learning_curve_from_json(self, json_file):
-        with open(json_file, 'r') as f:
-            history = json.load(f)
-
-        iterations = history['iterations']
-        mean_rewards = history['mean_rewards']
-        std_rewards = history['std_rewards']
-        neuron_counts = history['neuron_counts']
-
-        # Plot the learning curve with dual y-axes
+    def plot_learning_curve_from_json(self, json_files, plot_every=10):
+        # Initialize the plot
         fig, ax1 = plt.subplots(figsize=(10, 5))
 
-        # Plot all_rewards on the first y-axis
+        # Iterate over each JSON file
+        for json_file in json_files:
+            with open(json_file, 'r') as f:
+                history = json.load(f)
+
+            # Select every 10th iteration
+            iterations = history['iterations'][::plot_every]
+            mean_rewards = history['mean_rewards'][::plot_every]
+            std_rewards = history['std_rewards'][::plot_every]
+            neuron_counts = history['neuron_counts'][::plot_every]
+
+            # Plot mean_rewards on the first y-axis
+            ax1.plot(iterations, mean_rewards, label=f'Mean Reward ({os.path.dirname(json_file)})')
+            ax1.fill_between(iterations, 
+                             np.array(mean_rewards) - np.array(std_rewards), 
+                             np.array(mean_rewards) + np.array(std_rewards), 
+                             alpha=0.2, label=f'Reward Std Dev ({os.path.dirname(json_file)})')
+
+        # Set labels and ticks for the first y-axis
         ax1.set_xlabel('Environment steps [1e3]', fontsize=20)
         ax1.set_ylabel('Cumulative Reward', fontsize=20)
-        ax1.plot(mean_rewards, label='Mean Reward')
         ax1.tick_params(axis='y', labelsize=12)
-
-        # Fill between for mean reward range
-        plt.fill_between(iterations, 
-                        np.array(mean_rewards) - np.array(std_rewards), 
-                        np.array(mean_rewards) + np.array(std_rewards), 
-                        color='blue', alpha=0.2, label='Reward Std Dev')
-
-        # Ensure x-axis ticks are integers
         ax1.xaxis.set_major_locator(ticker.MaxNLocator(integer=True))
         ax1.tick_params(axis='x', labelsize=12)
         ax1.set_xticks(np.arange(0, self.cfg['num_iterations']+1, step=100))  # Adjust step as needed
 
         # Create a second y-axis to plot total_neurons
         ax2 = ax1.twinx()
-        ax2.set_ylabel('Total Neurons', fontsize=20)
-        ax2.plot(neuron_counts, label='Total Neurons', color='red', linestyle='--')
-        ax2.tick_params(axis='y', labelsize=12)
+        for json_file in json_files:
+            with open(json_file, 'r') as f:
+                history = json.load(f)
+            neuron_counts = history['neuron_counts'][::plot_every]
+            ax2.plot(iterations, neuron_counts, label=f'Total Neurons ({os.path.dirname(json_file)})', linestyle='--')
 
-        # Ensure y-axis ticks for total neurons are integers
+        # Set labels and ticks for the second y-axis
+        ax2.set_ylabel('Total Neurons', fontsize=20)
+        ax2.tick_params(axis='y', labelsize=12)
         ax2.yaxis.set_major_locator(ticker.MaxNLocator(integer=True))
 
         fig.tight_layout()
         plt.grid(True)
-
         # Add legends and bring them to the front
         legend1 = ax1.legend(loc='upper left', fontsize=14)
         legend2 = ax2.legend(loc='lower right', fontsize=14, bbox_to_anchor=(1, 0.05))
         legend1.set_zorder(10)
         legend2.set_zorder(10)
-
-        # Comment out or remove plt.show() to prevent displaying the plot
         plt.show()

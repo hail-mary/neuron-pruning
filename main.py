@@ -160,7 +160,7 @@ def main():
     parser.add_argument('--eval', type=str, help='Only evaluate a trained policy. Specify the directory to load the policy from.')
     parser.add_argument('--logdir', type=str, help='Specify the directory for logging.')
     parser.add_argument('--record', action='store_true', help='Record video of the best model during evaluation.')
-    parser.add_argument('--plot', type=str, help='Plot learning curve from the specified JSON file.')
+    parser.add_argument('--plot', type=str, nargs='+', help='Plot learning curve from the specified JSON file(s).')
     args = parser.parse_args()
 
     # Load configuration
