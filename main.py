@@ -157,14 +157,23 @@ def leader_process(result_queue, network_queue, cfg):
 def main():
     # Parse command-line arguments
     parser = argparse.ArgumentParser(description='Train or evaluate the policy.')
+    parser.add_argument('--cfg', type=str, default='config.yaml', help='Path to the configuration file.')
+    parser.add_argument('--env', type=str, help='Specify the environment name to override the config file.')
     parser.add_argument('--eval', type=str, help='Only evaluate a trained policy. Specify the directory to load the policy from.')
     parser.add_argument('--logdir', type=str, help='Specify the directory for logging.')
     parser.add_argument('--record', action='store_true', help='Record video of the best model during evaluation.')
     parser.add_argument('--plot', type=str, nargs='+', help='Plot learning curve from the specified JSON file(s).')
     args = parser.parse_args()
 
-    # Load configuration
-    cfg = load_config('config.yaml')
+     # Load configuration
+    if args.cfg:
+        cfg = load_config(args.cfg) 
+    else:
+        cfg = load_config('config.yaml') # Use the --cfg argument to load the configuration file
+
+    # Override env_name if specified
+    if args.env:
+        cfg['env_name'] = args.env
     
     if args.logdir:
         cfg['logdir'] = args.logdir
