@@ -61,7 +61,7 @@ class Model:
     def learn(self, total_timesteps):
         self.model.learn(total_timesteps)
 
-    def evaluate_policy(self, num_eval_episodes=1, num_eval_steps_per_episode=1000, record_video=False):
+    def evaluate_policy(self, seed=None, num_eval_episodes=1, num_eval_steps_per_episode=1000, record_video=False):
         total_rewards = []
         
         # Wrap the environment for video recording if record_video is True
@@ -70,14 +70,14 @@ class Model:
             self.env = gym.wrappers.RecordVideo(self.env, video_folder=video_folder, episode_trigger=lambda x: True)
         
         for _ in range(num_eval_episodes):
-            observation, info = self.env.reset()
+            observation, info = self.env.reset(seed=seed)
             episode_reward = 0
             for _ in range(num_eval_steps_per_episode):
                 action, _ = self.model.predict(observation, deterministic=True)
                 observation, reward, terminated, truncated, info = self.env.step(action)
                 episode_reward += reward
                 if terminated or truncated:
-                    break
+                    self.env.reset(seed=seed)
             total_rewards.append(episode_reward)
         
         self.env.close()

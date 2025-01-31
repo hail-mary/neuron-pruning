@@ -37,7 +37,7 @@ def follower_process(result_queue, network_queue, worker_id, cfg):
         model.learn(total_timesteps=cfg['timesteps_per_iteration'])
 
         # Policy evaluation
-        total_reward = model.evaluate_policy()
+        total_reward = model.evaluate_policy(seed=worker_id)
 
         # Send current policy params and architecture to the leader
         result_queue.put((worker_id, total_reward, model.policy_kwargs, model.policy.state_dict()))
