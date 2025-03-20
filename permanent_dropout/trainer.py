@@ -97,12 +97,14 @@ class Trainer:
                     arch[layer_type][layer_idx] -= num_to_drop
 
                     # Then, modify network parameters
-                    indices_to_remove = np.random.choice(layers[layer_idx], num_to_drop, replace=False)
-                    # print(layer_type, layer_idx, len(indices_to_remove))
+                    # for random elimination:
+                    # indices_to_remove = np.random.choice(layers[layer_idx], num_to_drop, replace=False)
 
                     # Process weights
                     weight_key_1 = f"mlp_extractor.{layer_type}_net.{2 * layer_idx}.weight"  # Adjust the key format as per your architecture
                     if weight_key_1 in params:
+                        weight_magnitude = torch.sqrt(torch.sum(params[weight_key_1] ** 2, dim=1))
+                        values, indices_to_remove = torch.topk(weight_magnitude, num_to_drop, largest=False)
                         params[weight_key_1] = self.remove_indices(params[weight_key_1], indices_to_remove, row_or_col='row')
                     
                     # Process biases

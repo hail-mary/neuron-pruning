@@ -180,7 +180,10 @@ def main():
 
     # Assert if dropout rates and net_arch are consistent
     assert len(cfg['dropout_rates']['policy']) == len(cfg['policy_kwargs']['net_arch']['pi'])
-    assert len(cfg['dropout_rates']['value']) == len(cfg['policy_kwargs']['net_arch']['vf'])
+    if cfg['algorithm'] == 'PPO':
+        assert len(cfg['dropout_rates']['value']) == len(cfg['policy_kwargs']['net_arch']['vf'])
+    else:
+        assert len(cfg['dropout_rates']['value']) == len(cfg['policy_kwargs']['net_arch']['qf'])
 
     if args.eval:
         import pathlib
