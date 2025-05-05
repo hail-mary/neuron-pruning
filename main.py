@@ -4,9 +4,9 @@ import numpy as np
 from multiprocessing import Process, Queue
 import time
 
-from permanent_dropout.model import Model
-from permanent_dropout.trainer import Trainer
-from permanent_dropout.logger import Logger
+from neuron_pruning.model import Model
+from neuron_pruning.trainer import Trainer
+from neuron_pruning.logger import Logger
 
 
 def load_config(file_path):
