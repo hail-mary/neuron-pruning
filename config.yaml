@@ -3,9 +3,9 @@ env_name: "Ant-v5"
 render_mode: "rgb_array"
 
 # Run settings
-num_workers: 5  # Number of parallel workers
+num_workers: 1  # Number of parallel workers
 num_iterations: 1000  # Total number of iterations to run
-timesteps_per_iteration: 1000  # Timesteps per iteration
+timesteps_per_iteration: 2048  # Timesteps per iteration
 dropout_rates:
   policy: [0.3, 0.4]  # Dropout rates for each layer in the Actor network
   value: [0.0, 0.0]   # Dropout rates for each layer in the Critic network
