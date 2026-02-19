@@ -8,6 +8,8 @@ import cloudpickle
 class Model:
     def __init__(self, cfg):
         self.cfg = cfg
+        if cfg['render_mode'] == 'None':
+            cfg['render_mode'] = None
         self.env = gym.make(cfg['env_name'], render_mode=cfg['render_mode'])
         self.make_policy(self.env)
     
@@ -34,8 +36,7 @@ class Model:
         )
         algorithm = getattr(stable_baselines3, self.cfg['algorithm'])
         device = self.cfg['device']
-        # self.model = None
-        self.model = algorithm("MlpPolicy", env, verbose=0, policy_kwargs=policy_kwargs, device=device)
+        self.model = algorithm("MlpPolicy", env, verbose=0, policy_kwargs=policy_kwargs, device=device, n_steps=self.cfg['timesteps_per_iteration'])
         if policy_weights is not None:
             self.model.policy.load_state_dict(policy_weights)
 
@@ -80,5 +81,4 @@ class Model:
                     self.env.reset(seed=seed)
             total_rewards.append(episode_reward)
         
-        self.env.close()
-        return np.mean(total_rewards)
+        return np.mean(total_rewards), np.std(total_rewards)

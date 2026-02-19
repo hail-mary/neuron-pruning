@@ -1,15 +1,20 @@
 # Environment settings
 env_name: "Ant-v5"
-render_mode: "rgb_array"
+render_mode: None
 
 # Run settings
-num_workers: 1  # Number of parallel workers
+seed: 0
+num_workers: 5  # Number of parallel workers
 num_iterations: 1000  # Total number of iterations to run
 timesteps_per_iteration: 2048  # Timesteps per iteration
-dropout_rates:
-  policy: [0.3, 0.4]  # Dropout rates for each layer in the Actor network
-  value: [0.0, 0.0]   # Dropout rates for each layer in the Critic network
-update_interval: 250  # Number of iterations between network adjustments
+target_sparsity:
+  policy: [0.80, 0.80] 
+  value: [0.80, 0.80]   
+T_start: 0
+T_end: 950
+update_interval: 100  # Number of iterations between network adjustments
+average_interval: 4  # Number of iterations between global averaging and evaluation
+
 
 # Model settings
 algorithm: "PPO"  # Algorithm to use
@@ -17,7 +22,7 @@ policy_kwargs:
   activation_fn: "SiLU"  # Activation function for the network
   net_arch: {
     pi: [256, 256],  # Architecture for the policy network
-    vf: [64, 64]   # Architecture for the value function network
+    vf: [256, 256]   # Architecture for the value function network
   }
 
 # Device settings

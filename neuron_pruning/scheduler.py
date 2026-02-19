@@ -1,7 +1,7 @@
 import torch
 import numpy as np
 
-class Trainer:
+class Scheduler:
     """
     a set of utility functions for training
     """
@@ -22,9 +22,10 @@ class Trainer:
 
     def preprocess(self, raw_arch, raw_params):
         # First, preprocess arch
-        layer_types = ('policy', 'value')
-        archs = tuple(raw_arch.values())
-        arch = dict(zip(layer_types, archs))
+        arch = {
+            'policy': raw_arch['pi'].copy(),
+            'value': raw_arch['vf'].copy() if 'vf' in raw_arch else raw_arch.get('qf', []).copy()
+        }
 
         # Then, preprocess params
         params = {}
@@ -47,9 +48,10 @@ class Trainer:
 
     def reconstruct(self, arch, params, aux):
         # First, reconstruct arch
-        layer_types = ('pi', 'vf')
-        archs = tuple(arch.values())
-        processed_arch = dict(zip(layer_types, archs))
+        processed_arch = {
+            'pi': arch['policy'],
+            'vf': arch['value']
+        }
 
         # Then, reconstruct params
         # Missing key(s) in state_dict: "log_std", "action_net.bias", "value_net.bias"
@@ -85,16 +87,50 @@ class Trainer:
 
         return new_tensor
 
-    def modify_network(self, params, arch, dropout_rates):
+    def get_num_to_drop(self, iteration, target_sparsity, arch):
+        # dropout rates are considered as the final sparsity level
+        T_end = self.cfg['T_end']
+        num_to_drop = {}
+        
+        # Get original architecture for reference
+        raw_orig_arch = self.cfg['policy_kwargs']['net_arch']
+        # Map it using the same logic as in preprocess ('pi' -> 'policy', 'vf' -> 'value')
+        orig_arch = {
+            'policy': raw_orig_arch['pi'],
+            'value': raw_orig_arch['vf'] if 'vf' in raw_orig_arch else raw_orig_arch.get('qf', [])
+        }
+
+        for layer_type, target_rates in target_sparsity.items():
+            num_to_drop[layer_type] = []
+            for layer_idx in range(len(target_rates)):
+                target_s = target_rates[layer_idx]
+                
+                # Pruning schedule: s(t) = target_s * (1 - (1 - t/T_end)^3)
+                progress = min(1.0, iteration / T_end)
+                current_target_s = target_s * (1 - (1 - progress) ** 3)
+                
+                orig_count = orig_arch[layer_type][layer_idx]
+                current_count = arch[layer_type][layer_idx]
+                
+                # Target number of neurons to remain
+                target_count = int(orig_count * (1 - current_target_s))
+                # How many to drop in this step
+                drop_count = current_count - target_count
+                
+                num_to_drop[layer_type].append(max(0, drop_count))
+        return num_to_drop
+
+    def modify_network(self, params, arch, iteration, target_sparsity):
+        num_to_drop_dict = self.get_num_to_drop(iteration, target_sparsity, arch)
         for layer_type, layers in arch.items():
             for layer_idx in range(len(layers)):
-                if dropout_rates[layer_type][layer_idx] > 0.0:
-                    num_to_drop = int(layers[layer_idx] * dropout_rates[layer_type][layer_idx])
-                    if num_to_drop == 0:
-                        continue
-
+                n_drop = num_to_drop_dict[layer_type][layer_idx]
+                if n_drop > 0:
+                    print(f"Layer {layer_type} {layer_idx}: {layers[layer_idx]} neurons, {n_drop} neurons to drop")
+                    # num_dropped = 256 - layers[layer_idx]
+                    # num_to_drop = int(256 * current_sparsity - num_dropped)
                     # First, modify network architecture
-                    arch[layer_type][layer_idx] -= num_to_drop
+                    arch[layer_type][layer_idx] -= n_drop
 
                     # Then, modify network parameters
                     # for random elimination:
@@ -104,7 +140,7 @@ class Trainer:
                     weight_key_1 = f"mlp_extractor.{layer_type}_net.{2 * layer_idx}.weight"  # Adjust the key format as per your architecture
                     if weight_key_1 in params:
                         weight_magnitude = torch.sqrt(torch.sum(params[weight_key_1] ** 2, dim=1))
-                        values, indices_to_remove = torch.topk(weight_magnitude, num_to_drop, largest=False)
+                        values, indices_to_remove = torch.topk(weight_magnitude, n_drop, largest=False)
                         params[weight_key_1] = self.remove_indices(params[weight_key_1], indices_to_remove, row_or_col='row')
                     
                     # Process biases

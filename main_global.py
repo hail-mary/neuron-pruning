@@ -36,20 +36,21 @@ def follower_process(result_queue, network_queue, worker_id, cfg):
         # Update policy params
         model.learn(total_timesteps=cfg['timesteps_per_iteration'])
 
-        # Averaging and architecture sync
-        if iteration % cfg.get('average_interval', 1) == 0 or iteration == cfg['num_iterations'] - 1:
-            # Send current policy params and architecture to the leader
-            result_queue.put((worker_id, model.policy_kwargs, model.policy.state_dict()))
+        total_reward, _ = model.evaluate_policy(seed=worker_id)
+        print(f"Worker {worker_id} Reward: {total_reward}")
+        
+        # Send current policy params and architecture to the leader
+        result_queue.put((worker_id, model.policy_kwargs, model.policy.state_dict()))
 
-            # Receive new policy params and architecture from the leader
-            new_arch, new_params = network_queue.get()
+        # Receive new policy params and architecture from the leader
+        new_arch, new_params = network_queue.get()
 
-            if model.policy_kwargs['net_arch'] != new_arch:  # Net architecture has been changed
-                new_kwargs = model.policy_kwargs.copy()
-                new_kwargs['net_arch'] = new_arch
-                model.make_policy(env, new_kwargs, new_params)
-            else:
-                model.make_policy(env, model.policy_kwargs, new_params)
+        if model.policy_kwargs['net_arch'] != new_arch:  # Net architecture has been changed
+            new_kwargs = model.policy_kwargs.copy()
+            new_kwargs['net_arch'] = new_arch
+            model.make_policy(env, new_kwargs, new_params)
+        else:
+            model.make_policy(env, model.policy_kwargs, new_params)
 
 def leader_process(result_queue, network_queue, cfg):
     """
@@ -58,19 +59,20 @@ def leader_process(result_queue, network_queue, cfg):
     num_workers = cfg['num_workers']
     num_iterations = cfg['num_iterations']
     target_sparsity = cfg['target_sparsity']
+    # Create global model for evaluation
+    global_model = Model(cfg)
     scheduler = Scheduler(cfg)
     logger = Logger(cfg)
-    writer = SummaryWriter(cfg['logdir'])
-    global_model = Model(cfg)
+    writer = SummaryWriter(cfg['logdir'] + f"/seed_{cfg['seed']}")
 
     all_rewards = []
     rewards_per_worker = [[] for _ in range(num_workers)]  # Record rewards for each worker
     # neuron_counts = []  # Track neuron count changes
     flops_counts = []
 
+    iteration_list = []
     best_policy_arch = None
     best_reward = float('-inf')
-    best_iteration = 0
 
     print('\n#---------------------- Start Training ! -----------------------#')
     # Start timing the training
@@ -78,65 +80,55 @@ def leader_process(result_queue, network_queue, cfg):
     for iteration in range(num_iterations):
         terminate = iteration == num_iterations - 1
         
-        # Check if we should perform averaging and evaluation
-        if iteration % cfg.get('average_interval', 1) != 0 and not terminate:
-            continue
-            
-        should_save = False
-        
         params = []
         policy_arch = None
+        iteration_list.append(iteration)
+        results = []
         logger.step() 
+        should_save = False
 
         # Collect results from each worker
         for _ in range(num_workers):
             worker_id, policy_kwargs, policy_weight = result_queue.get()
             params.append(policy_weight)
             policy_arch = policy_kwargs["net_arch"]
+            results.append((worker_id, policy_kwargs, policy_weight))
 
-        # Average weights
+        # Average weights from workers
         avg_params = scheduler.average_params(params)
+
+        # Evaluate global model (averaged weights) for 10 episodes
+        new_kwargs = cfg['policy_kwargs'].copy()
+        new_kwargs['net_arch'] = policy_arch
+        global_model.make_policy(global_model.env, new_kwargs, avg_params)
+        mean_reward, std_reward = global_model.evaluate_policy(num_eval_episodes=10, seed=cfg['seed'])
         
-        # Load into global model for evaluation
-        if global_model.policy_kwargs['net_arch'] != policy_arch:
-            global_model.make_policy(global_model.env, policy_kwargs, avg_params)
-        else:
-            global_model.model.policy.load_state_dict(avg_params)
-        
-        # Evaluate global model
-        mean_reward, std_reward = global_model.evaluate_policy(num_eval_episodes=10)
+        # Log statistics
         all_rewards.append(mean_reward)
-        for i in range(num_workers):
-            rewards_per_worker[i].append(mean_reward)
+        for worker_id in range(num_workers):
+            rewards_per_worker[worker_id].append(mean_reward)
 
         params_pi, params_vf = calc_params(policy_arch, cfg)
         flops_pi, flops_vf = params_pi * 2, params_vf * 2
         total_flops = flops_pi + flops_vf
         
-        # Log statistics
-        new_best_reward = max(all_rewards)
-
         # Track the best policy architecture
-        if new_best_reward > best_reward:
-            best_reward = new_best_reward
+        if mean_reward >= best_reward:
+            best_reward = mean_reward
             best_policy_arch = policy_arch.copy()
             best_iteration = iteration
             should_save = True
 
-        results = [(0, mean_reward, policy_kwargs, avg_params)]
         if should_save or terminate:
-            logger.save_checkpoint(results)
+            # logger.save_checkpoint(results)
             should_save = False
 
         # Log the iteration data
-        # total_neurons = sum(sum(units) for units in policy_arch.values())
         logger.log_iteration(mean_reward, std_reward, total_flops)
 
         # Output: statistics
         print(f"\nIteration {iteration+1}/{num_iterations}: Reward Mean = {mean_reward:.2f}, Std = {std_reward:.2f}")
         writer.add_scalar('eval/avg_return', mean_reward, iteration)
-        writer.add_scalar('eval/std_return', std_reward, iteration)
-        writer.add_scalar('eval/total_flops', total_flops, iteration)
 
         # Output: architecture information
         print("Policy Summary:")
@@ -147,8 +139,6 @@ def leader_process(result_queue, network_queue, cfg):
                 flops = flops_vf
             print(f"  - {layer}: {shape} FLOPs: {flops}")
         
-
-
         if iteration > 0 and iteration % cfg['update_interval'] == 0:
             print(f"\n----------- Iteration {iteration}/{num_iterations}: Modifying network architecture ----------")
             arch, params, aux = scheduler.preprocess(raw_arch=policy_arch, raw_params=avg_params)
@@ -218,12 +208,8 @@ def main():
     if args.env:
         cfg['env_name'] = args.env
     
-    import os
     if args.logdir:
         cfg['logdir'] = args.logdir
-    
-    # Append seed to logdir for unique run directories
-    cfg['logdir'] = os.path.join(cfg['logdir'], f"seed-{cfg['seed']}")
 
     # Assert if dropout rates and net_arch are consistent
     assert len(cfg['target_sparsity']['policy']) == len(cfg['policy_kwargs']['net_arch']['pi'])
