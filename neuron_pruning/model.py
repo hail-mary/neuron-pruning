@@ -11,6 +11,7 @@ class Model:
         if cfg['render_mode'] == 'None':
             cfg['render_mode'] = None
         self.env = gym.make(cfg['env_name'], render_mode=cfg['render_mode'])
+        self.env.reset(seed=cfg['seed'])
         self.make_policy(self.env)
     
     @property
@@ -21,7 +22,7 @@ class Model:
     def policy(self):
         return self.model.policy
     
-    def make_policy(self, env, policy_kwargs=None, policy_weights=None):
+    def make_policy(self, env, policy_kwargs=None, policy_weights=None, seed=None):
         if policy_kwargs is None: # to initialize
             policy_kwargs = self.cfg['policy_kwargs']
 
@@ -36,7 +37,9 @@ class Model:
         )
         algorithm = getattr(stable_baselines3, self.cfg['algorithm'])
         device = self.cfg['device']
-        self.model = algorithm("MlpPolicy", env, verbose=0, policy_kwargs=policy_kwargs, device=device, n_steps=self.cfg['timesteps_per_iteration'])
+        if seed is None:
+            seed = self.cfg['seed']
+        self.model = algorithm("MlpPolicy", env, verbose=0, policy_kwargs=policy_kwargs, device=device, n_steps=self.cfg['timesteps_per_iteration'], seed=seed)
         if policy_weights is not None:
             self.model.policy.load_state_dict(policy_weights)
 
@@ -70,8 +73,8 @@ class Model:
             video_folder = os.path.join(self.cfg['logdir'], 'videos')
             self.env = gym.wrappers.RecordVideo(self.env, video_folder=video_folder, episode_trigger=lambda x: True)
         
-        for _ in range(num_eval_episodes):
-            observation, info = self.env.reset(seed=seed)
+        for i in range(num_eval_episodes):
+            observation, info = self.env.reset(seed=seed+i)
             episode_reward = 0
             for _ in range(num_eval_steps_per_episode):
                 action, _ = self.model.predict(observation, deterministic=True)

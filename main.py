@@ -1,6 +1,8 @@
 import yaml
 import argparse
 import numpy as np
+import torch
+import random
 from multiprocessing import Process, Queue
 import time
 
@@ -44,12 +46,14 @@ def follower_process(result_queue, network_queue, worker_id, cfg):
             # Receive new policy params and architecture from the leader
             new_arch, new_params = network_queue.get()
 
+            # Each iteration/worker combination gets a unique seed offset from the base seed
+            worker_seed = cfg['seed'] + iteration * cfg['num_workers'] + worker_id
             if model.policy_kwargs['net_arch'] != new_arch:  # Net architecture has been changed
                 new_kwargs = model.policy_kwargs.copy()
                 new_kwargs['net_arch'] = new_arch
-                model.make_policy(env, new_kwargs, new_params)
+                model.make_policy(env, new_kwargs, new_params, worker_seed)
             else:
-                model.make_policy(env, model.policy_kwargs, new_params)
+                model.make_policy(env, model.policy_kwargs, new_params, worker_seed)
 
 def leader_process(result_queue, network_queue, cfg):
     """
@@ -104,7 +108,8 @@ def leader_process(result_queue, network_queue, cfg):
             global_model.model.policy.load_state_dict(avg_params)
         
         # Evaluate global model
-        mean_reward, std_reward = global_model.evaluate_policy(num_eval_episodes=10)
+        # Use a high offset from global seed for evaluation to avoid overlapping with training seeds
+        mean_reward, std_reward = global_model.evaluate_policy(seed=cfg['seed'] + 1000000, num_eval_episodes=10)
         all_rewards.append(mean_reward)
         for i in range(num_workers):
             rewards_per_worker[i].append(mean_reward)
@@ -123,17 +128,17 @@ def leader_process(result_queue, network_queue, cfg):
             best_iteration = iteration
             should_save = True
 
-        results = [(0, mean_reward, policy_kwargs, avg_params)]
-        if should_save or terminate:
-            logger.save_checkpoint(results)
-            should_save = False
-
-        # Log the iteration data
-        # total_neurons = sum(sum(units) for units in policy_arch.values())
-        logger.log_iteration(mean_reward, std_reward, total_flops)
+        # results = [(0, mean_reward, policy_kwargs, avg_params)]
+        # if should_save or terminate:
+        #     logger.save_checkpoint(results)
+        #     should_save = False
 
         # Output: statistics
-        print(f"\nIteration {iteration+1}/{num_iterations}: Reward Mean = {mean_reward:.2f}, Std = {std_reward:.2f}")
+        print(f"\n==== Iteration {iteration+1}/{num_iterations} ==== ")
+        elapsed = time.time() - start_time
+        h, rem = divmod(int(elapsed), 3600)
+        m, s = divmod(rem, 60)
+        print(f"Return Avg: {mean_reward:.2f}, Std: {std_reward:.2f}, Elapsed: {h:02d}:{m:02d}:{s:02d}")
         writer.add_scalar('eval/avg_return', mean_reward, iteration)
         writer.add_scalar('eval/std_return', std_reward, iteration)
         writer.add_scalar('eval/total_flops', total_flops, iteration)
@@ -146,8 +151,6 @@ def leader_process(result_queue, network_queue, cfg):
             else:
                 flops = flops_vf
             print(f"  - {layer}: {shape} FLOPs: {flops}")
-        
-
 
         if iteration > 0 and iteration % cfg['update_interval'] == 0:
             print(f"\n----------- Iteration {iteration}/{num_iterations}: Modifying network architecture ----------")
@@ -168,11 +171,6 @@ def leader_process(result_queue, network_queue, cfg):
         # Send weights and new architecture to each worker
         for worker_id in range(num_workers):
             network_queue.put((modified_arch, modified_params))
-
-        # Save the training history
-        logger.save_history()
-
-    logger.plot_learning_curve(all_rewards, rewards_per_worker, flops_counts)
 
     # End timing the training
     end_time = time.time()
@@ -204,6 +202,10 @@ def main():
     parser.add_argument('--env', type=str, help='Specify the environment name to override the config file.')
     parser.add_argument('--eval', type=str, help='Only evaluate a trained policy. Specify the directory to load the policy from.')
     parser.add_argument('--logdir', type=str, help='Specify the directory for logging.')
+    parser.add_argument('--seed', type=int, help='Specify the seed to override the config file.')
+    parser.add_argument('--update_interval', type=int, help='Specify the update interval to override the config file.')
+    parser.add_argument('--average_interval', type=int, help='Specify the average interval to override the config file.')
+    parser.add_argument('--num_iterations', type=int, help='Specify the number of iterations to override the config file.')
     parser.add_argument('--record', action='store_true', help='Record video of the best model during evaluation.')
     parser.add_argument('--plot', type=str, nargs='+', help='Plot learning curve from the specified JSON file(s).')
     args = parser.parse_args()
@@ -222,8 +224,29 @@ def main():
     if args.logdir:
         cfg['logdir'] = args.logdir
     
+    if args.seed is not None:
+        cfg['seed'] = args.seed
+    
+    if args.update_interval:
+        cfg['update_interval'] = args.update_interval
+    
+    if args.average_interval:
+        cfg['average_interval'] = args.average_interval
+    
+    if args.num_iterations:
+        cfg['num_iterations'] = args.num_iterations
+    
     # Append seed to logdir for unique run directories
     cfg['logdir'] = os.path.join(cfg['logdir'], f"seed-{cfg['seed']}")
+
+    # Set global seeds for reproducibility
+    random.seed(cfg['seed'])
+    np.random.seed(cfg['seed'])
+    torch.manual_seed(cfg['seed'])
+    if cfg['device'] != 'cpu' and torch.cuda.is_available():
+        torch.cuda.manual_seed_all(cfg['seed'])
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
 
     # Assert if dropout rates and net_arch are consistent
     assert len(cfg['target_sparsity']['policy']) == len(cfg['policy_kwargs']['net_arch']['pi'])

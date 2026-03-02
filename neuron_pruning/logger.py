@@ -135,15 +135,17 @@ class Logger:
         self.save_history()
 
     def log_training_summary(self, start_time, end_time, best_reward, average_reward, best_policy_arch, best_iteration):
-        # Calculate the duration in hours
-        duration_seconds = end_time - start_time
-        duration_hours = duration_seconds / 3600
+        # Calculate the duration
+        duration_seconds = int(end_time - start_time)
+        h, rem = divmod(duration_seconds, 3600)
+        m, s = divmod(rem, 60)
+        duration_str = f"{h:02d}:{m:02d}:{s:02d}"
 
         # Create the summary
         summary = (
             f"Training Summary:\n"
             f"-----------------\n"
-            f"Total Training Time: {duration_hours:.2f} hours\n"
+            f"Total Training Time: {duration_str}\n"
             f"Target Sparsity: {self.cfg['target_sparsity']}\n"
             f"Update Interval: {self.cfg['update_interval']}\n"
             f"Best Reward: {best_reward}\n"

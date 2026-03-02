@@ -13,7 +13,7 @@ target_sparsity:
 T_start: 0
 T_end: 950
 update_interval: 100  # Number of iterations between network adjustments
-average_interval: 4  # Number of iterations between global averaging and evaluation
+average_interval: 2  # Number of iterations between global averaging and evaluation
 
 
 # Model settings
