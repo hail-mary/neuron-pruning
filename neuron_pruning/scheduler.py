@@ -21,6 +21,7 @@ class Scheduler:
         return pre_avg_norm, avg_norm
 
     def preprocess(self, raw_arch, raw_params):
+        raw_params = raw_params.copy()
         # First, preprocess arch
         arch = {
             'policy': raw_arch['pi'].copy(),
@@ -120,43 +121,55 @@ class Scheduler:
                 num_to_drop[layer_type].append(max(0, drop_count))
         return num_to_drop
 
-    def modify_network(self, params, arch, iteration, target_sparsity):
+    def modify_network(self, params, arch, iteration, target_sparsity, optimizer_state=None):
         num_to_drop_dict = self.get_num_to_drop(iteration, target_sparsity, arch)
         for layer_type, layers in arch.items():
             for layer_idx in range(len(layers)):
                 n_drop = num_to_drop_dict[layer_type][layer_idx]
                 if n_drop > 0:
                     print(f"Layer {layer_type} {layer_idx}: {layers[layer_idx]} neurons, {n_drop} neurons to drop")
-                    # num_dropped = 256 - layers[layer_idx]
-                    # num_to_drop = int(256 * current_sparsity - num_dropped)
-                    # First, modify network architecture
-                    arch[layer_type][layer_idx] -= n_drop
-
-                    # Then, modify network parameters
-                    # for random elimination:
-                    # indices_to_remove = np.random.choice(layers[layer_idx], num_to_drop, replace=False)
-
-                    # Process weights
-                    weight_key_1 = f"mlp_extractor.{layer_type}_net.{2 * layer_idx}.weight"  # Adjust the key format as per your architecture
+                    
+                    # 1. Determine indices to remove based on weight magnitude
+                    weight_key_1 = f"mlp_extractor.{layer_type}_net.{2 * layer_idx}.weight"
                     if weight_key_1 in params:
                         weight_magnitude = torch.sqrt(torch.sum(params[weight_key_1] ** 2, dim=1))
                         values, indices_to_remove = torch.topk(weight_magnitude, n_drop, largest=False)
-                        params[weight_key_1] = self.remove_indices(params[weight_key_1], indices_to_remove, row_or_col='row')
-                    
-                    # Process biases
-                    bias_key = f"mlp_extractor.{layer_type}_net.{2 * layer_idx}.bias"  # Adjust the key format as per your architecture
+                    else:
+                        continue
+
+                    # 2. Modify network architecture
+                    arch[layer_type][layer_idx] -= n_drop
+
+                    # 3. Modify network parameters (weights and biases)
+                    # Current layer output weights
+                    params[weight_key_1] = self.remove_indices(params[weight_key_1], indices_to_remove, row_or_col='row')
+                    if optimizer_state and weight_key_1 in optimizer_state:
+                        for s_key in ['exp_avg', 'exp_avg_sq']:
+                            optimizer_state[weight_key_1][s_key] = self.remove_indices(optimizer_state[weight_key_1][s_key], indices_to_remove, row_or_col='row')
+
+                    # Current layer bias
+                    bias_key = f"mlp_extractor.{layer_type}_net.{2 * layer_idx}.bias"
                     if bias_key in params:
                         params[bias_key] = self.remove_indices(params[bias_key], indices_to_remove)
+                        if optimizer_state and bias_key in optimizer_state:
+                            for s_key in ['exp_avg', 'exp_avg_sq']:
+                                optimizer_state[bias_key][s_key] = self.remove_indices(optimizer_state[bias_key][s_key], indices_to_remove)
 
-                    # Process weights
-                    weight_key_2 = f"mlp_extractor.{layer_type}_net.{2 * (layer_idx + 1)}.weight"  # Adjust the key format as per your architecture
+                    # Next layer input weights
+                    weight_key_2 = f"mlp_extractor.{layer_type}_net.{2 * (layer_idx + 1)}.weight"
                     if weight_key_2 in params:
                         params[weight_key_2] = self.remove_indices(params[weight_key_2], indices_to_remove, row_or_col='col')
+                        if optimizer_state and weight_key_2 in optimizer_state:
+                            for s_key in ['exp_avg', 'exp_avg_sq']:
+                                optimizer_state[weight_key_2][s_key] = self.remove_indices(optimizer_state[weight_key_2][s_key], indices_to_remove, row_or_col='col')
 
-                    # Process output
+                    # Final output layer weights
                     output_key = "action_net.weight" if layer_type == 'policy' else "value_net.weight"
-                    if output_key in params and layer_idx == len(layers) - 1 :
+                    if output_key in params and layer_idx == len(layers) - 1:
                         params[output_key] = self.remove_indices(params[output_key], indices_to_remove, row_or_col='col')
+                        if optimizer_state and output_key in optimizer_state:
+                            for s_key in ['exp_avg', 'exp_avg_sq']:
+                                optimizer_state[output_key][s_key] = self.remove_indices(optimizer_state[output_key][s_key], indices_to_remove, row_or_col='col')
 
-        return arch, params
+        return arch, params, optimizer_state
 

@@ -1,3 +1,6 @@
 __pycache__
 neuron_pruning/__pycache__
-logs_*
+data/
+data_eval_fix/
+ablation/
+README_for_me.md

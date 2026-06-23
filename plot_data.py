@@ -1,8 +1,10 @@
 import os
 import glob
 import argparse
+import json
 import numpy as np
 import matplotlib.pyplot as plt
+import matplotlib.ticker as ticker
 from tensorboard.backend.event_processing import event_accumulator
 
 def get_event_data(event_file, return_tags, flops_tags):
@@ -28,8 +30,7 @@ def get_event_data(event_file, return_tags, flops_tags):
     
     return steps_return, values_return, steps_flops, values_flops
 
-def plot_learning_curve(log_dir, save_plot=False, save_legend=False):
-    # Setup styles
+def setup_plot_style():
     plt.rcParams['font.family'] = 'Times New Roman' if os.name == 'nt' else 'DejaVu Sans'
     plt.rcParams['font.size'] = 22
     plt.rcParams['axes.titlesize'] = 22
@@ -37,11 +38,16 @@ def plot_learning_curve(log_dir, save_plot=False, save_legend=False):
     plt.rcParams['xtick.labelsize'] = 20
     plt.rcParams['ytick.labelsize'] = 20
     plt.rcParams['grid.alpha'] = 0.3
+    plt.rcParams['lines.linewidth'] = 3.0
+    plt.rcParams["legend.framealpha"] = 1.0
+
+def plot_learning_curve(log_dir, save_plot=False, save_legend=False):
+    setup_plot_style()
 
     markers = ['s', '^', 'o']
     colors = ['#1f77b4', '#ff7f0e', '#2ca02c']
     return_tags = ['eval/avg_return', 'eval/reward']
-    flops_tags = ['eval/total_flops', 'train/total_flops', 'total_flops']
+    flops_tags = ['eval/inference_flops', 'eval/flops', 'train/total_flops', 'total_flops']
 
     # Find methods
     methods = [d for d in os.listdir(log_dir) if os.path.isdir(os.path.join(log_dir, d))]
@@ -117,9 +123,15 @@ def plot_learning_curve(log_dir, save_plot=False, save_legend=False):
         
         all_lns.extend([ln1, ln2])
 
+        # Calculate mean and std of the last 10 evaluation values across all seeds
+        last_10_all = np.concatenate([v[-10:] for v in method_returns])
+        final_mean = np.mean(last_10_all)
+        final_std = np.std(last_10_all)
+        print(f"{method}: {final_mean:.2f} +/- {final_std:.2f}")
+
     ax1.set_xlabel('Iteration', fontweight='bold')
     ax1.set_ylabel('Episode Return', fontweight='bold')
-    ax2.set_ylabel('FLOPs', fontweight='bold')
+    ax2.set_ylabel('Inference FLOPs', fontweight='bold')
     
     ax1.grid(True, linestyle='--', alpha=0.6)
     
@@ -161,6 +173,56 @@ def plot_learning_curve(log_dir, save_plot=False, save_legend=False):
     
     plt.show()
 
+def plot_from_json(json_files, plot1_every=100, plot2_every=10, labels=None):
+    setup_plot_style()
+    fig, ax1 = plt.subplots(figsize=(10, 6))
+    
+    if labels is None:
+        labels = [os.path.basename(f).replace('.json', '') for f in json_files]
+        
+    markers = ['s', '^', 'o']
+    colors = ['#1f77b4', '#ff7f0e', '#2ca02c']
+    markersize = 9
+
+    for i, json_file in enumerate(json_files):
+        with open(json_file, 'r') as f:
+            history = json.load(f)
+
+        iterations = history['iterations'][::plot1_every] + [history['iterations'][-1]]
+        mean_rewards = history['mean_rewards'][::plot1_every] + [history['mean_rewards'][-1]]
+        std_rewards = history['std_rewards'][::plot1_every] + [history['std_rewards'][-1]]
+        
+        c = colors[i % len(colors)]
+        m = markers[i % len(markers)]
+
+        ax1.plot(iterations, mean_rewards, label=labels[i], marker=m, markersize=markersize, color=c)
+        ax1.fill_between(iterations, 
+                         np.array(mean_rewards) - np.array(std_rewards), 
+                         np.array(mean_rewards) + np.array(std_rewards), 
+                         alpha=0.2, color=c)
+           
+    ax1.set_xlabel('Iteration')
+    ax1.set_ylabel('Episode Return')
+    ax1.grid(True, linestyle='--', alpha=0.6)
+    
+    ax2 = ax1.twinx()
+    for i, json_file in enumerate(json_files):
+        with open(json_file, 'r') as f:
+            history = json.load(f)
+        
+        iterations2 = history['iterations'][::plot2_every]
+        flops_counts = (history.get('inference_flops') or history.get('flops_counts'))[::plot2_every]
+        
+        c = colors[i % len(colors)]
+        m = markers[i % len(markers)]
+        ax2.plot(iterations2, flops_counts, linestyle='--', marker=m, markevery=10, markersize=markersize, color=c)
+
+    ax2.set_ylabel('Inference FLOPs')
+    ax2.yaxis.set_major_locator(ticker.MaxNLocator(integer=True))
+
+    fig.tight_layout()
+    ax1.legend(loc='lower left')
+    plt.show()
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
@@ -168,7 +230,12 @@ if __name__ == "__main__":
     parser.add_argument("--logdir", type=str, default=r"data", help="Directory containing method/seed-* subdirectories")
     parser.add_argument("--save", action="store_true", help="Save the plot as PDF")
     parser.add_argument("--save_legend", action="store_true", help="Save the legend separately as PDF")
+    parser.add_argument("--json", type=str, nargs='+', help="Plot from JSON history files")
     args = parser.parse_args()
-    logdir = os.path.join(args.logdir, args.env)
 
-    plot_learning_curve(logdir, save_plot=args.save, save_legend=args.save_legend)
+    if args.json:
+        plot_from_json(args.json)
+    else:
+        logdir = os.path.join(args.logdir, args.env)
+        plot_learning_curve(logdir, save_plot=args.save, save_legend=args.save_legend)
+
